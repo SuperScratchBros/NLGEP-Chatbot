@@ -1,76 +1,54 @@
-# AI Chatbot Models: Groq+Tavily+Gemini+OpenRouter+Mistral
+# NLGEP AI Chatbot
 
-A small web chatbot. Models include OpenAI Chat GPT 4.0, Gemini 3.8 Flash, and mixed. Tavily provides web search when the model needs current info. Built to run on Render's free tier.
+A small FastAPI web chatbot that supports Groq, Gemini, OpenRouter, web search, tools, voice transcription, image generation, and optional Supabase cloud chat history.
 
 ## Run locally
+
 ```bash
 pip install -r requirements.txt
-cp .env.example .env     # then put your real keys in .env
 uvicorn main:app --reload
 ```
-Open http://localhost:8000
 
-## Deploy on Render
-1. Push this folder to a public GitHub repo (never commit `.env`).
-2. In Render: **New > Blueprint**, pick the repo. It reads `render.yaml`.
-   (Or **New > Web Service**, runtime Python, instance type **Free**, build `pip install -r requirements.txt`, start `uvicorn main:app --host 0.0.0.0 --port $PORT`. Add the two API keys under Environment. The `.python-version` file pins Python 3.12.)
-3. When prompted, set `GROQ_API_KEY`, `TAVILY_API_KEY`, `HF_TOKEN`, `SUPABASE_URL`, and `SUPABASE_SECRET_KEY`.
-4. Deploy. The free service sleeps after ~15 min idle; the first request afterward is slow.
+Open http://localhost:8000.
+
+## Render
+
+The repository includes `render.yaml`. Set these environment variables in Render:
+
+| Key | Purpose |
+| --- | --- |
+| `GROQ_API_KEY` | Groq chat models and voice transcription |
+| `TAVILY_API_KEY` | Web search |
+| `GEMINI_API_KEY` | Optional Gemini chat provider |
+| `GEMINI_MODEL` | Optional Gemini model |
+| `OPENROUTER_API_KEY` | Optional OpenRouter chat provider |
+| `OPENROUTER_MODEL` | Optional OpenRouter model |
+| `HF_TOKEN` | Hugging Face token with the Inference Providers permission |
+| `HF_IMAGE_MODEL` | Image model; default is `black-forest-labs/FLUX.1-schnell` |
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_SECRET_KEY` | Supabase server secret key; use an `sb_secret_...` key when available |
+| `UPSTASH_REDIS_REST_URL` | Optional Upstash REST URL |
+| `UPSTASH_REDIS_REST_TOKEN` | Optional Upstash REST token |
+
+Never commit real API keys or a `.env` file.
+
+## Image generation
+
+The Image button uses Hugging Face Inference Providers and the configured `HF_IMAGE_MODEL`. The current default is FLUX.1-schnell. Hugging Face currently provides a small monthly free-user credit for Inference Providers; it is a limited free tier, not unlimited image generation. citeturn845468search4turn736274search0
+
+Create a Hugging Face token with permission to make Inference Providers calls and store it in Render as `HF_TOKEN`. Hugging Face documents `InferenceClient.text_to_image()` for this task. citeturn845468search3turn736274search0
+
+## Cloud chat history
+
+Run `supabase/schema.sql` once in the Supabase SQL Editor.
+
+Then set `SUPABASE_URL` and `SUPABASE_SECRET_KEY` in Render. The secret key is used only on the server and is never sent to the browser. Supabase currently recommends the `sb_secret_...` server key, replacing the older `service_role` key. citeturn569393search9turn569393search12
+
+The browser keeps an opaque chat ID in localStorage and the server stores the associated message history in Supabase.
 
 ## Notes
-- Chat history lives in the browser (localStorage), so the server stays stateless.
-- Change the model with the optional `GROQ_MODEL` env var.
-- Basic per-IP rate limit (20/min) protects your keys on a public URL. Edit `RATE_LIMIT` in `main.py`.
 
-- These are the API keys you need to put in on the enviorment section
-- # AI Chatbot Models: Groq + Tavily + Gemini + OpenRouter
-
-A web chatbot featuring model support across OpenAI, Gemini, Groq, and OpenRouter, integrated with Tavily live web search for real-time information retrieval. Designed to be run locally or deployed seamlessly on Render.
-
----
-
-## 🔑 Environment Variables & API Keys
-
-Below are all environment variables used by the application:
-
-| Key | Description / Example Value |
-| :--- | :--- |
-| `ACCESS_CODE` | Password/code required to access the chatbot interface. |
-| `DAILY_BUDGET_GEMINI` | Daily budget limit for Gemini API usage (e.g., `10.00`). |
-| `DAILY_BUDGET_GROQ` | Daily budget limit for Groq API usage (e.g., `10.00`). |
-| `DAILY_BUDGET_MISTRAL` | Daily budget limit for Mistral API usage (default: `200`). |
-| `DAILY_LIMIT_MAX` | Maximum daily usage/request cap (e.g., `100`). |
-| `DAILY_LIMIT_MIN` | Minimum daily usage threshold (e.g., `10`). |
-| `GEMINI_API_KEY` | API key from [Google AI Studio](https://aistudio.google.com/). |
-| `GEMINI_MODEL` | Default Gemini model (e.g., `gemini-1.5-flash`). |
-| `GROQ_API_KEY` | API key from [Groq Console](https://console.groq.com/). |
-| `GROQ_MODEL` | Default Groq model (e.g., `llama3-70b-8192`). |
-| `HF_TOKEN` | Hugging Face token with Inference Providers permission. |
-| `HF_IMAGE_MODEL` | Image model for the Image button (default: `black-forest-labs/FLUX.1-schnell`). |
-| `SUPABASE_URL` | Your Supabase project URL. |
-| `SUPABASE_SECRET_KEY` | Supabase server secret key (`sb_secret_...` preferred). |
-| `MISTRAL_API_KEY` | API key from Mistral AI Studio. |
-| `MISTRAL_MODEL` | Default Mistral chat model (default: `mistral-large-latest`). |
-| `MISTRAL_IMAGE_MODEL` | Mistral model used by the image-generation agent (default: `mistral-medium-latest`). |
-| `OPENROUTER_API_KEY` | API key from [OpenRouter](https://openrouter.ai/). |
-| `PYTHON_VERSION` | Python runtime version (e.g., `3.12.0`). |
-| `TAVILY_API_KEY` | API key for web search capabilities from [Tavily](https://tavily.com/). |
-| `UPSTASH_REDIS_REST_TOKEN` | REST API token from [Upstash Redis](https://upstash.com/). |
-| `UPSTASH_REDIS_REST_URL` | REST API URL from [Upstash Redis](https://upstash.com/). |
-
----
-
-## ⚙️ Local Setup Instructions
-
-1. **Clone the repository:**
-   ```bash
-   git clone <your-repo-url>
-   cd <your-repo-folder>
-
-
-### Mistral
-Set `MISTRAL_API_KEY` in Render using a Mistral Studio API key. Mistral appears in the model selector and participates in compatibility fallback. To disable it, add `mistral` to `DISABLED_FEATURES`. The Image toggle uses Mistral's built-in image-generation agent tool.
-
-
-### Image generation
-The Image button uses Hugging Face Inference Providers with FLUX.1-schnell. Hugging Face currently gives Free users a small monthly Inference Providers credit; this is a limited free tier, not unlimited generation.\n\n### Cloud chat history\nRun `supabase/schema.sql` once in your Supabase SQL Editor. Then set `SUPABASE_URL` and `SUPABASE_SECRET_KEY` on Render. The server keeps the secret key backend-only.\n
+- Chat still works from browser localStorage even when Supabase cloud history is not configured.
+- `DISABLED_FEATURES=image` disables the Image button.
+- `DISABLED_FEATURES=cloudchat` can be used to disable cloud chat behavior at the application level if needed.
+- Basic per-IP rate limiting remains enabled in the server.
