@@ -1,4 +1,4 @@
-import ast, hashlib, hmac, json, math, operator, os, re, time
+import ast, hashlib, json, math, operator, os, re, time
 from collections import defaultdict, deque
 from datetime import date
 from pathlib import Path
@@ -50,7 +50,6 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_SECRET_KEY = env_secret("SUPABASE_SECRET_KEY") or env_secret("SUPABASE_SERVICE_ROLE_KEY")
 GEMINI_KEY = "" if "gemini" in OFF else env_secret("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-ACCESS_CODE = os.getenv("ACCESS_CODE", "").strip()
 OR_KEY = "" if "openrouter" in OFF else env_secret("OPENROUTER_API_KEY")
 OR_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free").strip()  # free router picks a free model that supports tools
 # Fallback providers that speak the OpenAI chat format: (name, url, key, model, extra headers, label)
@@ -219,8 +218,6 @@ class ChatRequest(BaseModel):
 
 
 def check_rate_limit(request: Request) -> None:
-    if ACCESS_CODE and not hmac.compare_digest(request.headers.get("x-access-code", ""), ACCESS_CODE):
-        raise HTTPException(401, "Access code required.")
     fwd = request.headers.get("x-forwarded-for")
     ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown")
     now = time.time()
@@ -318,7 +315,7 @@ def model_choices():
 def scrub(text) -> str:
     """Hide any secret that ends up inside an error message."""
     text = str(text)
-    for v in (os.getenv("GROQ_API_KEY", ""), os.getenv("TAVILY_API_KEY", ""), GEMINI_KEY, OR_KEY, SUPABASE_SECRET_KEY, UP_TOKEN, ACCESS_CODE):
+    for v in (os.getenv("GROQ_API_KEY", ""), os.getenv("TAVILY_API_KEY", ""), GEMINI_KEY, OR_KEY, SUPABASE_SECRET_KEY, UP_TOKEN):
         v = v.strip()
         if len(v) > 4:
             text = text.replace(v, "***")
@@ -672,7 +669,6 @@ def models():
 def config():
     return {
         "off": sorted(OFF),
-        "access": bool(ACCESS_CODE),
         "cloud_chat": supabase_configured(),
     }
 
