@@ -72,7 +72,7 @@ async function refreshMessages(){
   polling=true;
   try{
     const url=lastMessageId?"/api/chat-messages?after="+encodeURIComponent(lastMessageId):"/api/chat-messages";
-    const r=await fetch(url,{credentials:"same-origin"});
+    const r=await fetch(url,{credentials:"same-origin",cache:"no-store"});
     if(r.status===401){overlay.style.display="flex";clearInterval(pollId);pollId=null;return}
     if(!r.ok)return;
     const d=await r.json();
@@ -82,7 +82,7 @@ async function refreshMessages(){
 }
 async function refreshUsers(){
   try{
-    const r=await fetch("/api/chat-users",{credentials:"same-origin"});
+    const r=await fetch("/api/chat-users",{credentials:"same-origin",cache:"no-store"});
     if(r.status===401){overlay.style.display="flex";clearInterval(pollId);pollId=null;return}
     if(!r.ok)return;
     const d=await r.json();
@@ -93,7 +93,7 @@ async function refreshUsers(){
 }
 async function start(){
   try{
-    const r=await fetch("/api/chat-me",{credentials:"same-origin"});
+    const r=await fetch("/api/chat-me",{credentials:"same-origin",cache:"no-store"});
     const d=await r.json().catch(()=>({}));
     if(!r.ok){
       loginError.textContent=d.detail||"Could not connect to InfiNet.";
@@ -110,7 +110,7 @@ async function start(){
     }
   }catch(e){loginError.textContent="Could not connect to InfiNet. Please try again."}
 }
-loginForm.onsubmit=async e=>{e.preventDefault();loginError.textContent="";try{const r=await fetch("/api/chat-session",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:username.value.trim()})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||"Could not join.");overlay.style.display="none";messagesEl.innerHTML="";lastMessageId="";await start()}catch(err){loginError.textContent=err.message}}
+loginForm.onsubmit=async e=>{e.preventDefault();loginError.textContent="";try{const r=await fetch("/api/chat-session",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:username.value.trim()})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||"Could not join.");messagesEl.innerHTML="";lastMessageId="";await start()}catch(err){loginError.textContent=err.message}}
 document.getElementById("composer").onsubmit=async e=>{e.preventDefault();const content=input.value.trim();if(!content)return;input.value="";try{const r=await fetch("/api/chat-messages",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({content})});if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||"Send failed.")}const d=await r.json();draw([d.message],d.message.username);lastMessageId=String(d.message.message_id)}catch(err){input.value=content;alert(err.message)}}
 document.getElementById("logout").onclick=async()=>{await fetch("/api/chat-session",{method:"DELETE",credentials:"same-origin"});clearInterval(pollId);location.reload()};start();
 </script></body></html>
