@@ -306,6 +306,14 @@ fetch("/api/config").then(r => r.json()).then(c => {
   document.body.dataset.off = c.off.join(" ");
   if (!c.image) imageBtn.style.display = "none";
 }).catch(() => { imageBtn.style.display = "none"; });
+fetch("/api/mistral-status").then(r => r.json()).then(c => {
+  if (!c.valid) {
+    imageBtn.style.display = "none";
+    document.body.dataset.mistral = c.configured ? "invalid" : "missing";
+  } else {
+    document.body.dataset.mistral = "ok";
+  }
+}).catch(() => { imageBtn.style.display = "none"; });
 refreshLeft();
 const modelSel = document.getElementById("model");
 fetch("/api/models").then(r => r.json()).then(d => {
