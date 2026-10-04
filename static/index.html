@@ -97,25 +97,73 @@ const log = document.getElementById("log"), input = document.getElementById("inp
 let messages = [];
 try { messages = JSON.parse(localStorage.getItem("chat") || "[]"); } catch (e) {}
 
-function save() { try { localStorage.setItem("chat", JSON.stringify(messages)); } catch (e) {} }
+let cloudChatId = null;
+try { cloudChatId = localStorage.getItem("cloud_chat_id"); } catch (e) {}
+if (!cloudChatId) {
+  try {
+    cloudChatId = crypto.randomUUID();
+    localStorage.setItem("cloud_chat_id", cloudChatId);
+  } catch (e) {}
+}
 
-function add(role, text, sources, imageFileId, imageUrl) {
+function save() {
+  try { localStorage.setItem("chat", JSON.stringify(messages)); } catch (e) {}
+  syncCloudChat();
+}
+
+let cloudSyncTimer = null;
+async function syncCloudChat() {
+  if (!cloudChatId) return;
+  if (cloudSyncTimer) clearTimeout(cloudSyncTimer);
+  cloudSyncTimer = setTimeout(async () => {
+    try {
+      await fetch("/api/cloud-chat/" + encodeURIComponent(cloudChatId), {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Access-Code": localStorage.getItem("code") || ""
+        },
+        body: JSON.stringify({messages})
+      });
+    } catch (e) {}
+  }, 250);
+}
+
+async function loadCloudChat() {
+  if (!cloudChatId) return;
+  try {
+    const res = await fetch("/api/config");
+    const cfg = await res.json();
+    if (!cfg.cloud_chat || !messages.length) {
+      if (!cfg.cloud_chat) return;
+    }
+    const r = await fetch("/api/cloud-chat/" + encodeURIComponent(cloudChatId), {
+      headers: {"X-Access-Code": localStorage.getItem("code") || ""}
+    });
+    if (!r.ok) return;
+    const d = await r.json();
+    if (Array.isArray(d.messages) && d.messages.length) {
+      messages = d.messages;
+      try { localStorage.setItem("chat", JSON.stringify(messages)); } catch (e) {}
+      render();
+    } else if (messages.length) {
+      syncCloudChat();
+    }
+  } catch (e) {}
+}
+
+function add(role, text, sources, imageUrl) {
   const d = document.createElement("div");
   d.className = "msg " + (role === "user" ? "me" : "bot");
   if (role === "user") d.textContent = text;
   else {
     const body = document.createElement("div"); body.className = "md";
-    if (imageFileId || imageUrl) {
+    if (imageUrl) {
       const img = document.createElement("img");
+      img.src = imageUrl;
       img.alt = text || "Generated image";
       img.style.maxWidth = "100%"; img.style.borderRadius = "10px";
       body.appendChild(img);
-      if (imageUrl) img.src = imageUrl;
-      else fetch("/api/image-url/" + encodeURIComponent(imageFileId), {
-        headers: {"X-Access-Code": localStorage.getItem("code") || ""}
-      }).then(r => r.ok ? r.json() : Promise.reject(new Error("image url failed")))
-        .then(x => { img.src = x.url; })
-        .catch(() => { img.alt = "Generated image is no longer available."; });
     } else {
       const html = renderMarkdown(text);
       if (html === null) { body.style.whiteSpace = "pre-wrap"; body.textContent = text; } else body.innerHTML = html;
@@ -144,7 +192,7 @@ function render() {
     log.innerHTML = '<p class="empty">Ask a question. I can search the web for current information.</p>';
     return;
   }
-  messages.forEach(m => add(m.role, m.display || m.content, m.sources, m.imageFileId, m.image));
+  messages.forEach(m => add(m.role, m.display || m.content, m.sources, m.image));
 }
 
 let attached = null, ctl = null;
@@ -155,7 +203,7 @@ imageBtn.onclick = () => {
   imageMode = !imageMode;
   imageBtn.classList.toggle("on", imageMode);
   imageBtn.textContent = imageMode ? "Image ON" : "Image";
-  input.placeholder = imageMode ? "Describe the image you want Mistral to generate" : "Ask anything";
+  input.placeholder = imageMode ? "Describe the image you want to generate" : "Ask anything";
 };
 
 function flash(msg) {
@@ -209,7 +257,7 @@ form.addEventListener("submit", async e => {
     messages.push({ role: "user", content: "Generate an image: " + prompt, display: "Generate image: " + prompt });
     const bubble = add("user", "Generate image: " + prompt); input.value = ""; input.style.height = "auto";
     ctl = new AbortController(); send.textContent = "Stop";
-    const status = document.createElement("div"); status.className = "status"; status.textContent = "Generating image with Mistral...";
+    const status = document.createElement("div"); status.className = "status"; status.textContent = "Generating image...";
     log.appendChild(status);
     try {
       const res = await fetch("/api/generate-image", {
@@ -225,7 +273,7 @@ form.addEventListener("submit", async e => {
       wrap.appendChild(img);
       if (d.text) { const p=document.createElement("div"); p.textContent=d.text; wrap.appendChild(p); }
       log.appendChild(wrap); log.scrollTop=log.scrollHeight;
-      messages.push({role:"assistant", content:d.text || "[Generated image]", display:d.text || "[Generated image]", imageFileId:d.file_id, image:d.url}); save();
+      messages.push({role:"assistant", content:"[Generated image]", display:"[Generated image]", image:d.url}); save();
     } catch (err) {
       if (err.name !== "AbortError") {
         messages.pop(); bubble.remove(); status.textContent = "Error: " + err.message;
@@ -306,14 +354,7 @@ fetch("/api/config").then(r => r.json()).then(c => {
   document.body.dataset.off = c.off.join(" ");
   if (!c.image) imageBtn.style.display = "none";
 }).catch(() => { imageBtn.style.display = "none"; });
-fetch("/api/mistral-status").then(r => r.json()).then(c => {
-  if (!c.valid) {
-    imageBtn.style.display = "none";
-    document.body.dataset.mistral = c.configured ? "invalid" : "missing";
-  } else {
-    document.body.dataset.mistral = "ok";
-  }
-}).catch(() => { imageBtn.style.display = "none"; });
+loadCloudChat();
 refreshLeft();
 const modelSel = document.getElementById("model");
 fetch("/api/models").then(r => r.json()).then(d => {
