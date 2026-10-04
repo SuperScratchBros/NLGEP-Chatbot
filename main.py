@@ -495,11 +495,14 @@ async def transcribe(request: Request):
 def supabase_headers():
     if not SUPABASE_SECRET_KEY:
         raise RuntimeError("Supabase server key is not configured.")
-    return {
+    headers = {
         "apikey": SUPABASE_SECRET_KEY,
-        "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
         "Content-Type": "application/json",
     }
+    # Legacy service_role keys are JWTs; new sb_secret_* keys must be sent as apikey.
+    if SUPABASE_SECRET_KEY.startswith("eyJ"):
+        headers["Authorization"] = f"Bearer {SUPABASE_SECRET_KEY}"
+    return headers
 
 
 SESSION_COOKIE = "infinet_session"
