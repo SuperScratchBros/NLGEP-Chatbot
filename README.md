@@ -14,7 +14,7 @@ Open http://localhost:8000
 1. Push this folder to a public GitHub repo (never commit `.env`).
 2. In Render: **New > Blueprint**, pick the repo. It reads `render.yaml`.
    (Or **New > Web Service**, runtime Python, instance type **Free**, build `pip install -r requirements.txt`, start `uvicorn main:app --host 0.0.0.0 --port $PORT`. Add the two API keys under Environment. The `.python-version` file pins Python 3.12.)
-3. When prompted, set `GROQ_API_KEY`, `TAVILY_API_KEY`, and `MISTRAL_API_KEY`.
+3. When prompted, set `GROQ_API_KEY`, `TAVILY_API_KEY`, `HF_TOKEN`, `SUPABASE_URL`, and `SUPABASE_SECRET_KEY`.
 4. Deploy. The free service sleeps after ~15 min idle; the first request afterward is slow.
 
 ## Notes
@@ -45,6 +45,10 @@ Below are all environment variables used by the application:
 | `GEMINI_MODEL` | Default Gemini model (e.g., `gemini-1.5-flash`). |
 | `GROQ_API_KEY` | API key from [Groq Console](https://console.groq.com/). |
 | `GROQ_MODEL` | Default Groq model (e.g., `llama3-70b-8192`). |
+| `HF_TOKEN` | Hugging Face token with Inference Providers permission. |
+| `HF_IMAGE_MODEL` | Image model for the Image button (default: `black-forest-labs/FLUX.1-schnell`). |
+| `SUPABASE_URL` | Your Supabase project URL. |
+| `SUPABASE_SECRET_KEY` | Supabase server secret key (`sb_secret_...` preferred). |
 | `MISTRAL_API_KEY` | API key from Mistral AI Studio. |
 | `MISTRAL_MODEL` | Default Mistral chat model (default: `mistral-large-latest`). |
 | `MISTRAL_IMAGE_MODEL` | Mistral model used by the image-generation agent (default: `mistral-medium-latest`). |
@@ -66,3 +70,7 @@ Below are all environment variables used by the application:
 
 ### Mistral
 Set `MISTRAL_API_KEY` in Render using a Mistral Studio API key. Mistral appears in the model selector and participates in compatibility fallback. To disable it, add `mistral` to `DISABLED_FEATURES`. The Image toggle uses Mistral's built-in image-generation agent tool.
+
+
+### Image generation
+The Image button uses Hugging Face Inference Providers with FLUX.1-schnell. Hugging Face currently gives Free users a small monthly Inference Providers credit; this is a limited free tier, not unlimited generation.\n\n### Cloud chat history\nRun `supabase/schema.sql` once in your Supabase SQL Editor. Then set `SUPABASE_URL` and `SUPABASE_SECRET_KEY` on Render. The server keeps the secret key backend-only.\n
