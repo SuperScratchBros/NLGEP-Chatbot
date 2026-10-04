@@ -19,6 +19,13 @@ MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 FALLBACK_MODELS = [m.strip() for m in os.getenv("GROQ_FALLBACK_MODELS", "").split(",") if m.strip()]
 STT_MODEL = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
 
+def env_secret(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"\"", "'"}:
+        value = value[1:-1].strip()
+    return value
+
+
 missing = [k for k in ("GROQ_API_KEY", "TAVILY_API_KEY") if not os.getenv(k)]
 if missing:
     raise RuntimeError(f"Missing environment variable(s): {', '.join(missing)}.")
@@ -42,13 +49,6 @@ UP_TOKEN = env_secret("UPSTASH_REDIS_REST_TOKEN")
 UPSTASH_DISABLED = False
 GEMINI_KEY = "" if "gemini" in OFF else env_secret("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-def env_secret(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"\"", "'"}:
-        value = value[1:-1].strip()
-    return value
-
-
 MISTRAL_KEY = "" if "mistral" in OFF else env_secret("MISTRAL_API_KEY")
 MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-latest").strip()
 MISTRAL_IMAGE_MODEL = os.getenv("MISTRAL_IMAGE_MODEL", "mistral-medium-latest").strip()
