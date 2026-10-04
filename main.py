@@ -12,7 +12,6 @@ from fastapi.staticfiles import StaticFiles
 from groq import Groq, NotFoundError, RateLimitError
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
-from huggingface_hub import InferenceClient
 
 load_dotenv()
 BASE_DIR = Path(__file__).parent
@@ -43,13 +42,10 @@ BUDGET = {
     "groq": int(os.getenv("DAILY_BUDGET_GROQ", "300")),
     "gemini": int(os.getenv("DAILY_BUDGET_GEMINI", "200")),
     "openrouter": int(os.getenv("DAILY_BUDGET_OPENROUTER", "40")),
-    "huggingface": int(os.getenv("DAILY_BUDGET_HUGGINGFACE", "10")),
 }
 UP_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")   # optional: makes counters survive restarts
 UP_TOKEN = env_secret("UPSTASH_REDIS_REST_TOKEN")
 UPSTASH_DISABLED = False
-HF_TOKEN = env_secret("HF_TOKEN")
-HF_IMAGE_MODEL = os.getenv("HF_IMAGE_MODEL", "black-forest-labs/FLUX.1-schnell").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_SECRET_KEY = env_secret("SUPABASE_SECRET_KEY") or env_secret("SUPABASE_SERVICE_ROLE_KEY")
 GEMINI_KEY = "" if "gemini" in OFF else env_secret("GEMINI_API_KEY")
@@ -222,9 +218,6 @@ class ChatRequest(BaseModel):
     model: str = "auto"
 
 
-class ImageRequest(BaseModel):
-    prompt: str = Field(min_length=1, max_length=4000)
-
 
 def check_rate_limit(request: Request) -> None:
     if ACCESS_CODE and not hmac.compare_digest(request.headers.get("x-access-code", ""), ACCESS_CODE):
@@ -306,7 +299,7 @@ def record_call(provider: str, model: str, user: str) -> None:
 
 def usage_load() -> float:
     d = today()
-    names = ["groq"] + [p[0] for p in COMPAT] + (["huggingface"] if HF_TOKEN else [])
+    names = ["groq"] + [p[0] for p in COMPAT]
     cap = sum(BUDGET.get(n, 0) for n in names)
     used = sum(kv_get(f"calls:{d}:{n}") for n in names)
     return min(1.0, used / cap) if cap else 1.0
@@ -420,19 +413,6 @@ def model_turn(msgs, user="?", choice="auto"):
     return text, calls
 
 
-def generate_image(prompt: str, user: str) -> dict:
-    """Generate an image through Hugging Face Inference Providers."""
-    if not HF_TOKEN:
-        raise RuntimeError("Hugging Face image generation is not configured.")
-    client = InferenceClient(provider="hf-inference", api_key=HF_TOKEN)
-    image = client.text_to_image(prompt, model=HF_IMAGE_MODEL)
-    buf = io.BytesIO()
-    image.save(buf, format="PNG")
-    data_url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
-    record_call("huggingface", HF_IMAGE_MODEL, user)
-    return {"url": data_url, "model": HF_IMAGE_MODEL}
-
-
 def run_chat(msgs, refund=None, user="?", choice="auto"):
     sources, answered = [], False
     try:
@@ -495,29 +475,6 @@ def chat(body: ChatRequest, request: Request):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-@app.post("/api/generate-image")
-def generate_image_endpoint(body: ImageRequest, request: Request):
-    check_rate_limit(request)
-    if "image" in OFF:
-        raise HTTPException(404, "Image generation is turned off.")
-    if not HF_TOKEN:
-        raise HTTPException(503, "Image generation is not configured. Add HF_TOKEN in Render.")
-    key = f"u:{today()}:{client_ip(request)}"
-    refund = None
-    if LIMITS_ON:
-        limit = daily_limit()
-        if kv_get(key) >= limit:
-            raise HTTPException(429, f"Daily limit reached ({limit} messages today). It resets at midnight UTC.")
-        incr(key)
-        refund = lambda: incr(key, -1)
-    try:
-        return generate_image(body.prompt.strip(), client_ip(request))
-    except Exception as e:
-        if refund:
-            refund()
-        raise HTTPException(502, f"Image generation failed: {scrub(e)}")
-
-
 @app.post("/api/transcribe")
 async def transcribe(request: Request):
     check_rate_limit(request)
@@ -537,6 +494,8 @@ async def transcribe(request: Request):
 
 
 def supabase_headers():
+    if not SUPABASE_SECRET_KEY:
+        raise RuntimeError("Supabase server key is not configured.")
     return {
         "apikey": SUPABASE_SECRET_KEY,
         "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
@@ -544,56 +503,132 @@ def supabase_headers():
     }
 
 
-def valid_chat_id(chat_id: str) -> bool:
-    return bool(re.fullmatch(r"[0-9a-fA-F-]{36}", chat_id))
+SESSION_COOKIE = "infinet_session"
+SESSION_MAX_AGE = 60 * 60 * 24 * 30
 
 
-class CloudChatRequest(BaseModel):
-    messages: list[Message] = Field(default_factory=list, max_length=100)
+class UsernameRequest(BaseModel):
+    username: str = Field(min_length=2, max_length=24, pattern=r"^[A-Za-z0-9_ .-]+$")
 
 
-@app.get("/api/cloud-chat/{chat_id}")
-def get_cloud_chat(chat_id: str, request: Request):
+class ChatMessageRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+
+
+def supabase_configured() -> bool:
+    return bool(SUPABASE_URL and SUPABASE_SECRET_KEY and "cloudchat" not in OFF)
+
+
+def session_user(request: Request):
+    session_id = request.cookies.get(SESSION_COOKIE, "")
+    if not session_id or not supabase_configured():
+        return None
+    r = httpx.get(
+        f"{SUPABASE_URL}/rest/v1/chat_sessions",
+        headers=supabase_headers(),
+        params={"select": "session_id,user_id,username", "session_id": f"eq.{session_id}", "limit": "1"},
+        timeout=10,
+    )
+    if r.status_code != 200:
+        raise HTTPException(502, f"Session lookup failed: {scrub(r.text[:300])}")
+    rows = r.json()
+    return rows[0] if rows else None
+
+
+def supabase_rows(table: str, params=None, method="GET", payload=None, prefer=None):
+    if not supabase_configured():
+        raise HTTPException(503, "Supabase chat is not configured. Add SUPABASE_URL and SUPABASE_SECRET_KEY in Render.")
+    headers = supabase_headers()
+    if prefer:
+        headers["Prefer"] = prefer
+    r = httpx.request(method, f"{SUPABASE_URL}/rest/v1/{table}", headers=headers,
+                      params=params or {}, json=payload, timeout=10)
+    if r.status_code not in (200, 201, 204):
+        raise HTTPException(502, f"Supabase request failed ({r.status_code}): {scrub(r.text[:300])}")
+    return r.json() if r.text else []
+
+
+@app.post("/api/chat-session")
+def create_chat_session(body: UsernameRequest, request: Request, response):
     check_rate_limit(request)
-    if not CLOUD_CHAT_ON:
-        raise HTTPException(404, "Cloud chat is turned off.")
-    if not valid_chat_id(chat_id):
-        raise HTTPException(400, "Invalid chat ID.")
+    if not supabase_configured():
+        raise HTTPException(503, "Supabase chat is not configured. Add SUPABASE_URL and SUPABASE_SECRET_KEY in Render.")
+    username = " ".join(body.username.strip().split())
+    if not username:
+        raise HTTPException(400, "Username cannot be empty.")
+    # A random session ID is the browser's login token. No password is stored.
+    session_id = os.urandom(24).hex()
     try:
-        r = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/chats",
-            headers=supabase_headers(),
-            params={"select": "messages,updated_at", "chat_id": f"eq.{chat_id}", "limit": "1"},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            r.raise_for_status()
-        rows = r.json()
-        return {"messages": rows[0]["messages"] if rows else []}
+        existing = supabase_rows("chat_users", {"select": "user_id,username", "username": f"eq.{username}", "limit": "1"})
+        if existing:
+            user = existing[0]
+        else:
+            user = supabase_rows("chat_users", {"select": "user_id,username"}, method="POST",
+                                 payload={"username": username},
+                                 prefer="return=representation")[0]
+        supabase_rows("chat_sessions", method="POST",
+                      payload={"session_id": session_id, "user_id": user["user_id"], "username": user["username"],
+                               "expires_at": (date.today()).isoformat()},
+                      prefer="return=minimal")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(502, f"Cloud chat read failed: {scrub(e)}")
+        raise HTTPException(502, f"Could not create chat session: {scrub(e)}")
+    response.set_cookie(SESSION_COOKIE, session_id, max_age=SESSION_MAX_AGE, httponly=True, samesite="lax", secure=True)
+    return {"username": user["username"]}
 
 
-@app.put("/api/cloud-chat/{chat_id}")
-def put_cloud_chat(chat_id: str, body: CloudChatRequest, request: Request):
+@app.delete("/api/chat-session")
+def delete_chat_session(request: Request, response):
     check_rate_limit(request)
-    if not CLOUD_CHAT_ON:
-        raise HTTPException(404, "Cloud chat is turned off.")
-    if not valid_chat_id(chat_id):
-        raise HTTPException(400, "Invalid chat ID.")
-    payload = {"chat_id": chat_id, "messages": [m.model_dump() for m in body.messages]}
-    try:
-        r = httpx.post(
-            f"{SUPABASE_URL}/rest/v1/chats?on_conflict=chat_id",
-            headers={**supabase_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
-            json=payload,
-            timeout=10,
-        )
-        if r.status_code not in (200, 201, 204):
-            r.raise_for_status()
-        return {"ok": True}
-    except Exception as e:
-        raise HTTPException(502, f"Cloud chat write failed: {scrub(e)}")
+    session_id = request.cookies.get(SESSION_COOKIE, "")
+    response.delete_cookie(SESSION_COOKIE)
+    if session_id and supabase_configured():
+        try:
+            supabase_rows("chat_sessions", {"session_id": f"eq.{session_id}"}, method="DELETE")
+        except HTTPException:
+            pass
+    return {"ok": True}
+
+
+@app.get("/api/chat-me")
+def chat_me(request: Request):
+    check_rate_limit(request)
+    return {"user": session_user(request)}
+
+
+@app.get("/api/chat-messages")
+def chat_messages(request: Request, after: str = ""):
+    check_rate_limit(request)
+    me = session_user(request)
+    if not me:
+        raise HTTPException(401, "Choose a username first.")
+    params = {
+        "select": "message_id,user_id,username,content,created_at",
+        "order": "created_at.asc",
+        "limit": "100",
+    }
+    if after and re.fullmatch(r"\d{4}-\d{2}-\d{2}T[0-9:.+\-Z]+", after):
+        params["created_at"] = f"gt.{after}"
+    rows = supabase_rows("chat_messages", params)
+    return {"messages": rows, "me": me["username"]}
+
+
+@app.post("/api/chat-messages")
+def send_chat_message(body: ChatMessageRequest, request: Request):
+    check_rate_limit(request)
+    me = session_user(request)
+    if not me:
+        raise HTTPException(401, "Choose a username first.")
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(400, "Message cannot be empty.")
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    rows = supabase_rows("chat_messages", method="POST",
+                         payload={"user_id": me["user_id"], "username": me["username"], "content": content,
+                                  "created_at": now},
+                         prefer="return=representation")
+    return {"message": rows[0]}
 
 
 @app.get("/api/models")
@@ -606,10 +641,7 @@ def config():
     return {
         "off": sorted(OFF),
         "access": bool(ACCESS_CODE),
-        "image": bool(HF_TOKEN) and "image" not in OFF,
-        "image_provider": "Hugging Face" if HF_TOKEN else "",
-        "image_model": HF_IMAGE_MODEL if HF_TOKEN else "",
-        "cloud_chat": CLOUD_CHAT_ON,
+        "cloud_chat": supabase_configured(),
     }
 
 
