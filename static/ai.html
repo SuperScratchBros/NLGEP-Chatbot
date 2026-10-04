@@ -6,49 +6,44 @@
 <title>NLGEP AI</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.css">
 <style>
-:root{--bg:#eef1f4;--panel:#fff;--ink:#1b2430;--muted:#66717f;--line:#d9dfe6;--me:#1f4fd8;--me-ink:#fff;--bot:#e6ebf1}
-@media (prefers-color-scheme:dark){:root{--bg:#12161c;--panel:#1a2029;--ink:#e6ebf1;--muted:#8d98a6;--line:#2a323d;--me:#3d6df0;--bot:#242c37}}
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
-body{background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;justify-content:center}
-main{width:100%;max-width:760px;height:100%;display:flex;flex-direction:column;background:var(--panel);border-inline:1px solid var(--line)}
-header{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
-header h1{font-size:17px;margin:0;font-weight:650}
-header button{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit;font-size:14px}
-#log{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:12px}
-.msg{max-width:85%;padding:10px 14px;border-radius:14px;overflow-wrap:anywhere}
-.me{white-space:pre-wrap;align-self:flex-end;background:var(--me);color:var(--me-ink);border-bottom-right-radius:4px}
-.bot{align-self:flex-start;background:var(--bot);border-bottom-left-radius:4px}
-.status{align-self:flex-start;color:var(--muted);font-size:14px}
+body{background:#fff;color:#000;font:16px/1.5 Arial,sans-serif;display:flex;justify-content:center}
+main{width:100%;max-width:800px;height:100%;display:flex;flex-direction:column;background:#fff;border-left:1px solid #000;border-right:1px solid #000}
+header{padding:12px 16px;border-bottom:1px solid #000;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;background:#fff}
+header h1{font-size:18px;margin:0;font-weight:700}
+header button,header select{background:#fff;border:1px solid #000;color:#000;border-radius:2px;padding:6px 10px;cursor:pointer;font:14px Arial,sans-serif}
+header select option{color:#000;background:#fff}
+#log{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:85%;padding:10px 12px;border:1px solid #000;background:#fff;overflow-wrap:anywhere}
+.me{white-space:pre-wrap;align-self:flex-end}
+.bot{align-self:flex-start}
+.status{align-self:flex-start;font-size:14px}
 .sources{margin-top:8px;font-size:13px;white-space:normal}
-.sources a{display:block;color:var(--muted);text-decoration:underline;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.empty{margin:auto;text-align:center;color:var(--muted);max-width:32ch}
-form{display:flex;gap:8px;padding:12px 18px;border-top:1px solid var(--line);padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))}
-textarea{flex:1;resize:none;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;padding:10px 12px;font:inherit;max-height:140px}
-textarea:focus,button:focus-visible{outline:2px solid var(--me);outline-offset:1px}
-form button{background:var(--me);color:var(--me-ink);border:0;border-radius:10px;padding:0 18px;font:inherit;font-weight:600;cursor:pointer}
+.sources a{display:block;color:#000;text-decoration:underline;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty{margin:auto;text-align:center;max-width:32ch}
+form{display:flex;gap:8px;padding:12px 16px;border-top:1px solid #000;background:#fff;padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))}
+textarea{flex:1;resize:none;border:1px solid #000;background:#fff;color:#000;border-radius:2px;padding:10px 12px;font:inherit;max-height:140px;min-width:0;outline:none}
+textarea:focus,button:focus-visible{outline:2px solid #000;outline-offset:1px}
+form button{background:#fff;color:#000;border:1px solid #000;border-radius:2px;padding:0 18px;font:700 16px Arial,sans-serif;cursor:pointer}
 form button:disabled{opacity:.5;cursor:default}
 .md>:first-child{margin-top:0}.md>:last-child{margin-bottom:0}
 .md p,.md ul,.md ol,.md pre,.md blockquote,.md table{margin:.6em 0}
 .md ul,.md ol{padding-left:1.4em}.md li{margin:.2em 0}
 .md h1,.md h2,.md h3,.md h4{font-size:1.05em;line-height:1.3;margin:.9em 0 .4em}
-.md a{color:inherit;text-decoration:underline}
-.md code{background:rgba(127,127,127,.2);padding:.1em .35em;border-radius:4px;font-size:.9em}
-.md pre{background:rgba(127,127,127,.15);padding:10px 12px;border-radius:8px;overflow-x:auto}
-.md pre code{background:none;padding:0}
-.md blockquote{margin-left:0;padding-left:12px;border-left:3px solid var(--line);color:var(--muted)}
+.md a{color:#000;text-decoration:underline}
+.md code{background:#fff;border:1px solid #000;padding:.1em .35em;border-radius:2px;font-size:.9em}
+.md pre{background:#fff;border:1px solid #000;padding:10px 12px;overflow-x:auto}
+.md pre code{border:0;padding:0}
+.md blockquote{margin-left:0;padding-left:12px;border-left:2px solid #000}
 .md table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse}
-.md th,.md td{border:1px solid var(--line);padding:4px 10px;text-align:left}
-.md hr{border:0;border-top:1px solid var(--line)}
+.md th,.md td{border:1px solid #000;padding:4px 10px;text-align:left}
+.md hr{border:0;border-top:1px solid #000}
 .md .katex-display{overflow-x:auto;overflow-y:hidden;padding:2px 0}
-.aux{background:none;border:1px solid var(--line);color:var(--muted);border-radius:10px;padding:0 12px;font:inherit;cursor:pointer;max-width:9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.aux.on{background:#b3261e;border-color:#b3261e;color:#fff}
-textarea{min-width:0}
-.bar{margin-top:6px;display:flex;gap:6px}.bar button{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:1px 8px;font:inherit;font-size:12px;cursor:pointer}
+.aux{background:#fff;border:1px solid #000;color:#000;border-radius:2px;padding:0 12px;font:16px Arial,sans-serif;cursor:pointer;max-width:9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.aux.on{background:#fff;border:2px solid #000;color:#000}
+.bar{margin-top:6px;display:flex;gap:6px}.bar button{background:#fff;border:1px solid #000;color:#000;border-radius:2px;padding:2px 8px;font:12px Arial,sans-serif;cursor:pointer}
 [data-off~="voice"] #mic,[data-off~="attach"] #attach,[data-off~="listen"] .listen,[data-off~="models"] #model{display:none}
-header{flex-wrap:wrap;gap:8px}
-header select{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:4px 6px;font:inherit;font-size:14px;max-width:12em}
-header select option{color:#000}
 </style>
 </head>
 <body>
@@ -163,7 +158,7 @@ mic.onclick = async () => {
       stream.getTracks().forEach(t => t.stop()); mic.textContent = "Mic"; mic.classList.remove("on");
       const type = (rec.mimeType || "audio/webm").split(";")[0];
       try {
-        const r = await fetch("/api/transcribe", { method: "POST", headers: { "Content-Type": type, "X-Access-Code": localStorage.getItem("code") || "" }, body: new Blob(chunks, { type }) });
+        const r = await fetch("/api/transcribe", { method: "POST", headers: { "Content-Type": type, }, body: new Blob(chunks, { type }) });
         const d = await r.json();
         if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : "Transcription failed");
         input.value = (input.value + " " + d.text).trim(); input.dispatchEvent(new Event("input")); input.focus();
@@ -193,10 +188,9 @@ form.addEventListener("submit", async e => {
 
   try {
     const res = await fetch("/api/chat", {
-      method: "POST", signal: ctl.signal, headers: { "Content-Type": "application/json", "X-Access-Code": localStorage.getItem("code") || "" },
+      method: "POST", signal: ctl.signal, headers: { "Content-Type": "application/json", },
       body: JSON.stringify({ messages: messages.map(({ role, content }) => ({ role, content })), model: document.getElementById("model").value || "auto" })
     });
-    if (res.status === 401) { localStorage.setItem("code", prompt("Enter the access code:") || ""); throw new Error("Access code needed. Enter it, then send again."); }
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(typeof d.detail === "string" ? d.detail : "Request failed"); }
     const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
     for (;;) {
