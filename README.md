@@ -44,6 +44,10 @@ Below are all environment variables used by the application:
 | `GEMINI_MODEL` | Default Gemini model (e.g., `gemini-1.5-flash`). |
 | `GROQ_API_KEY` | API key from [Groq Console](https://console.groq.com/). |
 | `GROQ_MODEL` | Default Groq model (e.g., `llama3-70b-8192`). |
+| `MISTRAL_API_KEY` | API key from Mistral AI Studio. |
+| `MISTRAL_MODEL` | Default Mistral chat model (default: `mistral-large-latest`). |
+| `MISTRAL_IMAGE_MODEL` | Mistral model used by the image-generation agent (default: `mistral-medium-latest`). |
+| `MISTRAL_IMAGE_AGENT_ID` | Optional existing Mistral image-generation agent ID; leave blank to let the app create/cache one. |
 | `OPENROUTER_API_KEY` | API key from [OpenRouter](https://openrouter.ai/). |
 | `PYTHON_VERSION` | Python runtime version (e.g., `3.12.0`). |
 | `TAVILY_API_KEY` | API key for web search capabilities from [Tavily](https://tavily.com/). |
@@ -58,3 +62,7 @@ Below are all environment variables used by the application:
    ```bash
    git clone <your-repo-url>
    cd <your-repo-folder>
+
+
+### Mistral
+Set `MISTRAL_API_KEY` in Render. Mistral appears in the model selector and participates in compatibility fallback. To disable it, add `mistral` to `DISABLED_FEATURES`. The Image toggle uses Mistral's built-in image-generation agent tool.
