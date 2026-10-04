@@ -48,7 +48,7 @@ form button:disabled{opacity:.5;cursor:default}
 </head>
 <body>
 <main>
-  <header><h1>NLGEP AI <small id="left" style="font-weight:400;color:var(--muted);font-size:13px"></small></h1><div style="display:flex;gap:8px;flex-wrap:wrap"><select id="model" aria-label="Model"><option value="auto">Auto (best available)</option></select><button id="export" type="button">Export</button><button id="home" type="button">Home</button><button id="clear" type="button">New chat</button></div></header>
+  <header><h1>NLGEP AI <small id="left" style="font-weight:400;color:#000;font-size:13px"></small></h1><div style="display:flex;gap:8px;flex-wrap:wrap"><select id="model" aria-label="Model"><option value="auto">Auto (best available)</option></select><button id="export" type="button">Export</button><button id="home" type="button">Home</button><button id="clear" type="button">New chat</button></div></header>
   <div id="log" aria-live="polite"></div>
   <form id="form">
     <textarea id="input" rows="1" placeholder="Ask anything" aria-label="Message"></textarea>
@@ -90,7 +90,13 @@ function renderMarkdown(src) {
 const log = document.getElementById("log"), input = document.getElementById("input"),
       send = document.getElementById("send"), form = document.getElementById("form");
 let messages = [];
-try { messages = JSON.parse(localStorage.getItem("chat") || "[]"); } catch (e) {}
+try {
+  const stored = JSON.parse(localStorage.getItem("nlgep_ai_chat") || "[]");
+  messages = Array.isArray(stored) ? stored.filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string") : [];
+} catch (e) {}
+function save() {
+  try { localStorage.setItem("nlgep_ai_chat", JSON.stringify(messages.slice(-50))); } catch (e) {}
+}
 
 function add(role, text, sources) {
   const d = document.createElement("div");
@@ -104,8 +110,15 @@ function add(role, text, sources) {
     if (text) {
       const bar = document.createElement("div"); bar.className = "bar";
       const mk = (label, fn) => { const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.className = label.toLowerCase(); b.onclick = () => fn(b); bar.appendChild(b); };
-      mk("Copy", b => { navigator.clipboard.writeText(text); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1200); });
-      mk("Listen", () => { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(body.innerText)); });
+      mk("Copy", async b => {
+        try { await navigator.clipboard.writeText(text); b.textContent = "Copied"; }
+        catch (e) { b.textContent = "Copy failed"; }
+        setTimeout(() => b.textContent = "Copy", 1200);
+      });
+      mk("Listen", () => {
+        if (!window.speechSynthesis) { flash("Speech playback is not available in this browser."); return; }
+        speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(body.innerText));
+      });
       d.appendChild(bar);
     }
   }
@@ -192,6 +205,7 @@ form.addEventListener("submit", async e => {
       body: JSON.stringify({ messages: messages.map(({ role, content }) => ({ role, content })), model: document.getElementById("model").value || "auto" })
     });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(typeof d.detail === "string" ? d.detail : "Request failed"); }
+    if (!res.body) throw new Error("The server returned an empty response.");
     const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
     for (;;) {
       const { done, value } = await reader.read(); if (done) break;
@@ -200,7 +214,8 @@ form.addEventListener("submit", async e => {
       while ((i = buf.indexOf("\n\n")) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 2);
         if (!line.startsWith("data: ")) continue;
-        const ev = JSON.parse(line.slice(6));
+        let ev;
+        try { ev = JSON.parse(line.slice(6)); } catch (e) { continue; }
         if (ev.t === "status") status.textContent = ev.v;
         else if (ev.t === "token") {
           if (!live) { status.remove(); live = add("assistant", ""); body = live.querySelector(".md"); }
