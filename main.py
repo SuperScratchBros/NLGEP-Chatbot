@@ -571,6 +571,30 @@ def generate_image(body: ImageRequest, request: Request):
         raise HTTPException(502, f"Image generation failed: {scrub(e)}")
 
 
+@app.get("/api/image-url/{file_id}")
+def image_url(file_id: str, request: Request):
+    check_rate_limit(request)
+    if "image" in OFF:
+        raise HTTPException(404, "Image generation is turned off.")
+    if not MISTRAL_KEY:
+        raise HTTPException(503, "Mistral is not configured.")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", file_id):
+        raise HTTPException(400, "Invalid image file ID.")
+    r = httpx.get(
+        f"https://api.mistral.ai/v1/files/{file_id}/url",
+        headers={"Authorization": f"Bearer {MISTRAL_KEY}"},
+        params={"expiry": 24},
+        timeout=30,
+    )
+    if r.status_code != 200:
+        print("Mistral image URL failed:", r.status_code, scrub(r.text[:300]), flush=True)
+        r.raise_for_status()
+    signed = r.json().get("url")
+    if not signed:
+        raise HTTPException(502, "Mistral did not return an image URL.")
+    return {"url": signed}
+
+
 @app.post("/api/transcribe")
 async def transcribe(request: Request):
     check_rate_limit(request)
