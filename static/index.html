@@ -99,14 +99,27 @@ try { messages = JSON.parse(localStorage.getItem("chat") || "[]"); } catch (e) {
 
 function save() { try { localStorage.setItem("chat", JSON.stringify(messages)); } catch (e) {} }
 
-function add(role, text, sources) {
+function add(role, text, sources, imageFileId, imageUrl) {
   const d = document.createElement("div");
   d.className = "msg " + (role === "user" ? "me" : "bot");
   if (role === "user") d.textContent = text;
   else {
     const body = document.createElement("div"); body.className = "md";
-    const html = renderMarkdown(text);
-    if (html === null) { body.style.whiteSpace = "pre-wrap"; body.textContent = text; } else body.innerHTML = html;
+    if (imageFileId || imageUrl) {
+      const img = document.createElement("img");
+      img.alt = text || "Generated image";
+      img.style.maxWidth = "100%"; img.style.borderRadius = "10px";
+      body.appendChild(img);
+      if (imageUrl) img.src = imageUrl;
+      else fetch("/api/image-url/" + encodeURIComponent(imageFileId), {
+        headers: {"X-Access-Code": localStorage.getItem("code") || ""}
+      }).then(r => r.ok ? r.json() : Promise.reject(new Error("image url failed")))
+        .then(x => { img.src = x.url; })
+        .catch(() => { img.alt = "Generated image is no longer available."; });
+    } else {
+      const html = renderMarkdown(text);
+      if (html === null) { body.style.whiteSpace = "pre-wrap"; body.textContent = text; } else body.innerHTML = html;
+    }
     d.appendChild(body);
     if (text) {
       const bar = document.createElement("div"); bar.className = "bar";
@@ -131,7 +144,7 @@ function render() {
     log.innerHTML = '<p class="empty">Ask a question. I can search the web for current information.</p>';
     return;
   }
-  messages.forEach(m => add(m.role, m.display || m.content, m.sources));
+  messages.forEach(m => add(m.role, m.display || m.content, m.sources, m.imageFileId, m.image));
 }
 
 let attached = null, ctl = null;
@@ -212,7 +225,7 @@ form.addEventListener("submit", async e => {
       wrap.appendChild(img);
       if (d.text) { const p=document.createElement("div"); p.textContent=d.text; wrap.appendChild(p); }
       log.appendChild(wrap); log.scrollTop=log.scrollHeight;
-      messages.push({role:"assistant", content:"[Generated image]", display:"[Generated image]", image:d.url}); save();
+      messages.push({role:"assistant", content:d.text || "[Generated image]", display:d.text || "[Generated image]", imageFileId:d.file_id, image:d.url}); save();
     } catch (err) {
       if (err.name !== "AbortError") {
         messages.pop(); bubble.remove(); status.textContent = "Error: " + err.message;
@@ -289,7 +302,10 @@ const left = document.getElementById("left");
 function refreshLeft() {
   fetch("/api/usage").then(r => r.json()).then(u => { left.textContent = u.enabled ? " \u00b7 " + u.remaining + "/" + u.limit + " left today" : ""; }).catch(() => {});
 }
-fetch("/api/config").then(r => r.json()).then(c => { document.body.dataset.off = c.off.join(" "); }).catch(() => {});
+fetch("/api/config").then(r => r.json()).then(c => {
+  document.body.dataset.off = c.off.join(" ");
+  if (!c.image) imageBtn.style.display = "none";
+}).catch(() => { imageBtn.style.display = "none"; });
 refreshLeft();
 const modelSel = document.getElementById("model");
 fetch("/api/models").then(r => r.json()).then(d => {
