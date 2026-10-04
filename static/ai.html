@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NLGEP AI</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.css">
+<style>
+:root{--bg:#eef1f4;--panel:#fff;--ink:#1b2430;--muted:#66717f;--line:#d9dfe6;--me:#1f4fd8;--me-ink:#fff;--bot:#e6ebf1}
+@media (prefers-color-scheme:dark){:root{--bg:#12161c;--panel:#1a2029;--ink:#e6ebf1;--muted:#8d98a6;--line:#2a323d;--me:#3d6df0;--bot:#242c37}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;justify-content:center}
+main{width:100%;max-width:760px;height:100%;display:flex;flex-direction:column;background:var(--panel);border-inline:1px solid var(--line)}
+header{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+header h1{font-size:17px;margin:0;font-weight:650}
+header button{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit;font-size:14px}
+#log{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:12px}
+.msg{max-width:85%;padding:10px 14px;border-radius:14px;overflow-wrap:anywhere}
+.me{white-space:pre-wrap;align-self:flex-end;background:var(--me);color:var(--me-ink);border-bottom-right-radius:4px}
+.bot{align-self:flex-start;background:var(--bot);border-bottom-left-radius:4px}
+.status{align-self:flex-start;color:var(--muted);font-size:14px}
+.sources{margin-top:8px;font-size:13px;white-space:normal}
+.sources a{display:block;color:var(--muted);text-decoration:underline;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty{margin:auto;text-align:center;color:var(--muted);max-width:32ch}
+form{display:flex;gap:8px;padding:12px 18px;border-top:1px solid var(--line);padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))}
+textarea{flex:1;resize:none;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;padding:10px 12px;font:inherit;max-height:140px}
+textarea:focus,button:focus-visible{outline:2px solid var(--me);outline-offset:1px}
+form button{background:var(--me);color:var(--me-ink);border:0;border-radius:10px;padding:0 18px;font:inherit;font-weight:600;cursor:pointer}
+form button:disabled{opacity:.5;cursor:default}
+.md>:first-child{margin-top:0}.md>:last-child{margin-bottom:0}
+.md p,.md ul,.md ol,.md pre,.md blockquote,.md table{margin:.6em 0}
+.md ul,.md ol{padding-left:1.4em}.md li{margin:.2em 0}
+.md h1,.md h2,.md h3,.md h4{font-size:1.05em;line-height:1.3;margin:.9em 0 .4em}
+.md a{color:inherit;text-decoration:underline}
+.md code{background:rgba(127,127,127,.2);padding:.1em .35em;border-radius:4px;font-size:.9em}
+.md pre{background:rgba(127,127,127,.15);padding:10px 12px;border-radius:8px;overflow-x:auto}
+.md pre code{background:none;padding:0}
+.md blockquote{margin-left:0;padding-left:12px;border-left:3px solid var(--line);color:var(--muted)}
+.md table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse}
+.md th,.md td{border:1px solid var(--line);padding:4px 10px;text-align:left}
+.md hr{border:0;border-top:1px solid var(--line)}
+.md .katex-display{overflow-x:auto;overflow-y:hidden;padding:2px 0}
+.aux{background:none;border:1px solid var(--line);color:var(--muted);border-radius:10px;padding:0 12px;font:inherit;cursor:pointer;max-width:9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.aux.on{background:#b3261e;border-color:#b3261e;color:#fff}
+textarea{min-width:0}
+.bar{margin-top:6px;display:flex;gap:6px}.bar button{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:1px 8px;font:inherit;font-size:12px;cursor:pointer}
+[data-off~="voice"] #mic,[data-off~="attach"] #attach,[data-off~="listen"] .listen,[data-off~="models"] #model{display:none}
+header{flex-wrap:wrap;gap:8px}
+header select{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:4px 6px;font:inherit;font-size:14px;max-width:12em}
+header select option{color:#000}
+</style>
+</head>
+<body>
+<main>
+  <header><h1>NLGEP AI <small id="left" style="font-weight:400;color:var(--muted);font-size:13px"></small></h1><div style="display:flex;gap:8px;flex-wrap:wrap"><select id="model" aria-label="Model"><option value="auto">Auto (best available)</option></select><button id="export" type="button">Export</button><button id="home" type="button">Home</button><button id="clear" type="button">New chat</button></div></header>
+  <div id="log" aria-live="polite"></div>
+  <form id="form">
+    <textarea id="input" rows="1" placeholder="Ask anything" aria-label="Message"></textarea>
+    <button type="button" id="attach" class="aux">Attach</button>
+    <button type="button" id="mic" class="aux">Mic</button>
+    <input type="file" id="file" hidden accept=".txt,.md,.csv,.json,.py,.js,.html,.css,.log,text/*">
+    <button id="send">Send</button>
+  </form>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.js"></script>
+<script>
+if (window.DOMPurify) DOMPurify.addHook("afterSanitizeAttributes", n => {
+  if (n.tagName === "A") { n.setAttribute("target", "_blank"); n.setAttribute("rel", "noopener noreferrer"); }
+});
+
+// Markdown + LaTeX -> safe HTML. Returns null if the libraries failed to load.
+function renderMarkdown(src) {
+  if (!window.marked || !window.DOMPurify) return null;
+  const maths = [];
+  const stash = (tex, display, raw) => {
+    if (!window.katex) return raw;
+    try { maths.push(katex.renderToString(tex.trim(), { displayMode: display, throwOnError: false })); }
+    catch (e) { return raw; }
+    return "MATHPH" + (maths.length - 1) + "END";
+  };
+  // Leave code blocks and inline code untouched (odd indexes are code)
+  const text = src.split(/(```[\s\S]*?```|`[^`\n]*`)/g).map((p, i) => i % 2 ? p : p
+    .replace(/\$\$([\s\S]+?)\$\$/g, (m, t) => stash(t, true, m))
+    .replace(/\\\[([\s\S]+?)\\\]/g, (m, t) => stash(t, true, m))
+    .replace(/\\\(([\s\S]+?)\\\)/g, (m, t) => stash(t, false, m))
+    .replace(/(?<![\\$\w])\$(?![\s$])((?:\\.|[^$\\\n])+?)(?<![\s\\])\$(?![\d$\w])/g, (m, t) => stash(t, false, m))
+  ).join("");
+  const html = DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true }));
+  return html.replace(/MATHPH(\d+)END/g, (m, n) => maths[n] ?? m);
+}
+
+const log = document.getElementById("log"), input = document.getElementById("input"),
+      send = document.getElementById("send"), form = document.getElementById("form");
+let messages = [];
+try { messages = JSON.parse(localStorage.getItem("chat") || "[]"); } catch (e) {}
+
+function add(role, text, sources) {
+  const d = document.createElement("div");
+  d.className = "msg " + (role === "user" ? "me" : "bot");
+  if (role === "user") d.textContent = text;
+  else {
+    const body = document.createElement("div"); body.className = "md";
+else {
+      const html = renderMarkdown(text);
+      if (html === null) { body.style.whiteSpace = "pre-wrap"; body.textContent = text; } else body.innerHTML = html;
+    }
+    d.appendChild(body);
+    if (text) {
+      const bar = document.createElement("div"); bar.className = "bar";
+      const mk = (label, fn) => { const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.className = label.toLowerCase(); b.onclick = () => fn(b); bar.appendChild(b); };
+      mk("Copy", b => { navigator.clipboard.writeText(text); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1200); });
+      mk("Listen", () => { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(body.innerText)); });
+      d.appendChild(bar);
+    }
+  }
+  if (sources && sources.length) {
+    const s = document.createElement("div"); s.className = "sources";
+    sources.forEach(x => { const a = document.createElement("a"); a.href = x.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = x.title; s.appendChild(a); });
+    d.appendChild(s);
+  }
+  log.appendChild(d); log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+function render() {
+  log.innerHTML = "";
+  if (!messages.length) {
+    log.innerHTML = '<p class="empty">Ask a question. I can search the web for current information.</p>';
+    return;
+  }
+  messages.forEach(m => add(m.role, m.display || m.content, m.sources));
+}
+
+let attached = null, ctl = null;
+const attachBtn = document.getElementById("attach"), fileIn = document.getElementById("file"), mic = document.getElementById("mic");
+function flash(msg) {
+  const d = document.createElement("div"); d.className = "status"; d.textContent = msg;
+  log.appendChild(d); log.scrollTop = log.scrollHeight; setTimeout(() => d.remove(), 6000);
+}
+
+attachBtn.onclick = () => {
+  if (attached) { attached = null; attachBtn.textContent = "Attach"; attachBtn.classList.remove("on"); fileIn.value = ""; }
+  else fileIn.click();
+};
+fileIn.onchange = async () => {
+  const f = fileIn.files[0]; if (!f) return;
+  if (f.size > 200000) { flash("That file is over 200 KB. Attach a smaller text file."); fileIn.value = ""; return; }
+  let t = await f.text(), cut = t.length > 8000; if (cut) t = t.slice(0, 8000);
+  attached = { name: f.name, text: t + (cut ? "\n[truncated]" : "") };
+  attachBtn.textContent = f.name; attachBtn.classList.add("on");
+  if (cut) flash("Only the first 8,000 characters of the file are sent.");
+};
+
+let rec, chunks = [];
+mic.onclick = async () => {
+  if (rec && rec.state === "recording") { rec.stop(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    rec = new MediaRecorder(stream); chunks = [];
+    rec.ondataavailable = e => chunks.push(e.data);
+    rec.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop()); mic.textContent = "Mic"; mic.classList.remove("on");
+      const type = (rec.mimeType || "audio/webm").split(";")[0];
+      try {
+        const r = await fetch("/api/transcribe", { method: "POST", headers: { "Content-Type": type, "X-Access-Code": localStorage.getItem("code") || "" }, body: new Blob(chunks, { type }) });
+        const d = await r.json();
+        if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : "Transcription failed");
+        input.value = (input.value + " " + d.text).trim(); input.dispatchEvent(new Event("input")); input.focus();
+      } catch (err) { flash("Voice input failed: " + err.message); }
+    };
+    rec.start(); mic.textContent = "Stop"; mic.classList.add("on");
+  } catch (e) { flash("Microphone access was blocked. Allow it in your browser settings."); }
+};
+
+form.addEventListener("submit", async e => {
+  e.preventDefault();
+  const typed = input.value.trim();
+  if (ctl) { ctl.abort(); return; }
+  if (!typed && !attached) return;
+ const shown = (attached ? "Attached: " + attached.name + "\n" : "") + typed;
+  const full = attached ? 'Attached file "' + attached.name + '":\n```\n' + attached.text + "\n```\n\n" + typed : typed;
+  if (!messages.length) log.innerHTML = "";
+  messages.push({ role: "user", content: full, display: shown });
+  const bubble = add("user", shown); input.value = ""; input.style.height = "auto"; ctl = new AbortController(); send.textContent = "Stop";
+  const keep = attached; attached = null; attachBtn.textContent = "Attach"; attachBtn.classList.remove("on"); fileIn.value = "";
+
+  const status = document.createElement("div"); status.className = "status"; status.textContent = "Thinking...";
+  log.appendChild(status); log.scrollTop = log.scrollHeight;
+  const wake = setTimeout(() => status.textContent = "The server is waking up. This can take up to a minute.", 6000);
+  let live = null, body = null, text = "", sources = [], raf = 0;
+  const paint = () => { raf = 0; const h = renderMarkdown(text); if (h === null) { body.style.whiteSpace = "pre-wrap"; body.textContent = text; } else body.innerHTML = h; log.scrollTop = log.scrollHeight; };
+
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST", signal: ctl.signal, headers: { "Content-Type": "application/json", "X-Access-Code": localStorage.getItem("code") || "" },
+      body: JSON.stringify({ messages: messages.map(({ role, content }) => ({ role, content })), model: document.getElementById("model").value || "auto" })
+    });
+    if (res.status === 401) { localStorage.setItem("code", prompt("Enter the access code:") || ""); throw new Error("Access code needed. Enter it, then send again."); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(typeof d.detail === "string" ? d.detail : "Request failed"); }
+    const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (!line.startsWith("data: ")) continue;
+        const ev = JSON.parse(line.slice(6));
+        if (ev.t === "status") status.textContent = ev.v;
+        else if (ev.t === "token") {
+          if (!live) { status.remove(); live = add("assistant", ""); body = live.querySelector(".md"); }
+          text += ev.v; if (!raf) raf = requestAnimationFrame(paint);
+        } else if (ev.t === "sources") sources = ev.v;
+        else if (ev.t === "error") throw new Error(ev.v);
+      }
+    }
+    if (raf) cancelAnimationFrame(raf);
+    if (!text) throw new Error("Empty reply");
+    if (live) live.remove(); status.remove();
+    messages.push({ role: "assistant", content: text, sources }); add("assistant", text, sources); save();
+  } catch (err) {
+    if (live) live.remove();
+    if (err.name === "AbortError") {
+      status.remove();
+      if (text) { messages.push({ role: "assistant", content: text + "\n\n*(stopped)*", sources }); add("assistant", text + "\n\n*(stopped)*", sources); save(); }
+      else { messages.pop(); bubble.remove(); input.value = typed; }
+      return;
+    }
+    messages.pop(); bubble.remove(); input.value = typed;
+    if (keep) { attached = keep; attachBtn.textContent = keep.name; attachBtn.classList.add("on"); }
+    status.textContent = "Error: " + err.message + " Your message is back in the box. Send it again.";
+  } finally { clearTimeout(wake); ctl = null; send.textContent = "Send"; input.focus(); refreshLeft(); }
+});
+
+input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
+input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = input.scrollHeight + "px"; });
+document.getElementById("export").onclick = () => {
+  if (!messages.length) { flash("Nothing to export yet."); return; }
+  const md = messages.map(m => (m.role === "user" ? "**You:** " : "**Assistant:** ") + (m.display || m.content)).join("\n\n---\n\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([md], { type: "text/markdown" })); a.download = "chat.md"; a.click(); URL.revokeObjectURL(a.href);
+};
+document.getElementById("clear").onclick = () => { messages = []; save(); render(); };
+const left = document.getElementById("left");
+function refreshLeft() {
+  fetch("/api/usage").then(r => r.json()).then(u => { left.textContent = u.enabled ? " \u00b7 " + u.remaining + "/" + u.limit + " left today" : ""; }).catch(() => {});
+}
+fetch("/api/config").then(r => r.json()).then(c => {
+  document.body.dataset.off = c.off.join(" ");
+  if (!c.image) imageBtn.style.display = "none";
+}).catch(() => { imageBtn.style.display = "none"; });
+
+refreshLeft();
+const modelSel = document.getElementById("model");
+fetch("/api/models").then(r => r.json()).then(d => {
+  modelSel.innerHTML = "";
+  d.models.forEach(m => { const o = document.createElement("option"); o.value = m.id; o.textContent = m.label; modelSel.appendChild(o); });
+  let saved = null; try { saved = localStorage.getItem("model"); } catch (e) {}
+  if (saved && [...modelSel.options].some(o => o.value === saved)) modelSel.value = saved;
+}).catch(() => {});
+modelSel.onchange = () => { try { localStorage.setItem("model", modelSel.value); } catch (e) {} };
+document.getElementById("home").onclick = () => { location.href = "/"; };
+render();
+</script>
+</body>
+</html>
+
