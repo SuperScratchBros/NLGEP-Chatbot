@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Infinity Network — Chatting</title>
+<style>
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#070a08;color:#e9fff0}
+.app{height:100%;display:grid;grid-template-columns:250px 1fr;overflow:hidden}
+.sidebar{padding:20px;border-right:1px solid #203528;background:#0a110c;display:flex;flex-direction:column;gap:14px}
+.brand{font-weight:800;font-size:20px;letter-spacing:.06em}.muted{color:#78917e;font-size:13px}
+.online{padding:10px 12px;border:1px solid #203528;border-radius:12px;background:#0c160f}
+.users{overflow:auto;display:flex;flex-direction:column;gap:6px}.user{padding:7px 9px;border-radius:9px;background:#0d1710;font-size:13px}
+.top{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid #203528;background:rgba(7,12,9,.9)}
+.content{display:flex;flex-direction:column;min-width:0}.messages{flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:12px}
+.msg{max-width:min(720px,80%);padding:10px 13px;border-radius:14px;background:#101a13;border:1px solid #1d2b21}.msg.me{align-self:flex-end;background:#17321f;border-color:#285c39}
+.name{font-size:12px;font-weight:800;color:#80eaa1;margin-bottom:3px}.time{font-size:10px;color:#5f7665;margin-top:4px}
+.composer{display:flex;gap:10px;padding:14px 18px;border-top:1px solid #203528}
+input,button{font:inherit}input{flex:1;min-width:0;background:#0c140e;color:#e9fff0;border:1px solid #294132;border-radius:12px;padding:12px 13px;outline:none}
+input:focus{border-color:#6bdd8e;box-shadow:0 0 0 2px rgba(107,221,142,.12)}button{border:1px solid #2b5a39;background:#17311f;color:#e9fff0;border-radius:12px;padding:10px 16px;cursor:pointer;font-weight:700}button:hover{border-color:#70e99a}
+.overlay{position:fixed;inset:0;background:rgba(2,5,3,.95);display:flex;align-items:center;justify-content:center;padding:20px;z-index:5}
+.login{width:min(440px,100%);padding:28px;border:1px solid #284334;border-radius:20px;background:#0b130d;box-shadow:0 20px 80px rgba(0,0,0,.55)}
+.login h1{margin-top:0}.login p{color:#809789;line-height:1.5}.login form{display:flex;gap:10px}.login .error{color:#ff8f8f;min-height:20px;margin-top:10px}
+.home{background:none;border-color:#27432f}@media(max-width:760px){.app{grid-template-columns:1fr}.sidebar{display:none}.msg{max-width:90%}}
+</style>
+</head>
+<body>
+<div id="overlay" class="overlay"><div class="login">
+<h1>Enter InfiNet</h1><p>Choose a unique username. This creates your chat identity on Infinity Network.</p>
+<form id="loginForm"><input id="username" maxlength="24" autocomplete="off" placeholder="Username"><button>Join</button></form>
+<div id="loginError" class="error"></div></div></div>
+<div class="app">
+<aside class="sidebar"><div class="brand">∞ InfiNet</div><button class="home" onclick="location.href='/'">Home</button>
+<div class="online"><strong id="onlineCount">0 online</strong><div class="muted">Active in the lobby</div></div><div class="muted">People here</div><div id="users" class="users"></div></aside>
+<section class="content"><div class="top"><div><strong>Global Chat</strong><div class="muted">Talk with other Infinity Network users</div></div><button id="logout">Leave</button></div>
+<div id="messages" class="messages"></div>
+<form id="composer" class="composer"><input id="messageInput" maxlength="2000" autocomplete="off" placeholder="Message InfiNet…"><button>Send</button></form></section>
+</div>
+<script>
+const overlay=document.getElementById("overlay"),loginForm=document.getElementById("loginForm"),username=document.getElementById("username"),loginError=document.getElementById("loginError"),messagesEl=document.getElementById("messages"),usersEl=document.getElementById("users"),onlineCount=document.getElementById("onlineCount"),input=document.getElementById("messageInput");
+let lastSeen="",pollId=null;
+function fmt(t){try{return new Date(t).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"})}catch(e){return""}}
+function draw(rows,me){rows.forEach(m=>{const d=document.createElement("div");d.className="msg"+(m.username===me?" me":"");d.innerHTML='<div class="name"></div><div class="body"></div><div class="time"></div>';d.querySelector(".name").textContent=m.username;d.querySelector(".body").textContent=m.content;d.querySelector(".time").textContent=fmt(m.created_at);messagesEl.appendChild(d)});messagesEl.scrollTop=messagesEl.scrollHeight}
+async function refreshMessages(){try{const url=lastSeen?"/api/chat-messages?after="+encodeURIComponent(lastSeen):"/api/chat-messages";const r=await fetch(url,{credentials:"same-origin"});if(r.status===401){overlay.style.display="flex";return}if(!r.ok)return;const d=await r.json();draw(d.messages,d.me);if(d.messages.length)lastSeen=d.messages[d.messages.length-1].created_at}catch(e){}}
+async function refreshUsers(){try{const r=await fetch("/api/chat-users",{credentials:"same-origin"});if(!r.ok)return;const d=await r.json();onlineCount.textContent=d.count+" online";usersEl.innerHTML="";d.users.forEach(u=>{const x=document.createElement("div");x.className="user";x.textContent=u.username;usersEl.appendChild(x)})}catch(e){}}
+async function start(){try{const r=await fetch("/api/chat-me",{credentials:"same-origin"});if(!r.ok)return;const d=await r.json();if(d.user){overlay.style.display="none";refreshMessages();refreshUsers();clearInterval(pollId);pollId=setInterval(()=>{refreshMessages();refreshUsers()},1500)}}catch(e){}}
+loginForm.onsubmit=async e=>{e.preventDefault();loginError.textContent="";try{const r=await fetch("/api/chat-session",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:username.value.trim()})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||"Could not join.");overlay.style.display="none";messagesEl.innerHTML="";lastSeen="";await start()}catch(err){loginError.textContent=err.message}}
+document.getElementById("composer").onsubmit=async e=>{e.preventDefault();const content=input.value.trim();if(!content)return;input.value="";try{const r=await fetch("/api/chat-messages",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({content})});if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||"Send failed.")}const d=await r.json();draw([d.message],d.message.username);lastSeen=d.message.created_at}catch(err){input.value=content;alert(err.message)}}
+document.getElementById("logout").onclick=async()=>{await fetch("/api/chat-session",{method:"DELETE",credentials:"same-origin"});clearInterval(pollId);location.reload()};start();
+</script></body></html>
