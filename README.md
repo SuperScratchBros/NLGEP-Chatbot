@@ -48,7 +48,6 @@ Below are all environment variables used by the application:
 | `MISTRAL_API_KEY` | API key from Mistral AI Studio. |
 | `MISTRAL_MODEL` | Default Mistral chat model (default: `mistral-large-latest`). |
 | `MISTRAL_IMAGE_MODEL` | Mistral model used by the image-generation agent (default: `mistral-medium-latest`). |
-| `MISTRAL_IMAGE_AGENT_ID` | Optional existing Mistral image-generation agent ID; leave blank to let the app create/cache one. |
 | `OPENROUTER_API_KEY` | API key from [OpenRouter](https://openrouter.ai/). |
 | `PYTHON_VERSION` | Python runtime version (e.g., `3.12.0`). |
 | `TAVILY_API_KEY` | API key for web search capabilities from [Tavily](https://tavily.com/). |
@@ -66,4 +65,4 @@ Below are all environment variables used by the application:
 
 
 ### Mistral
-Set `MISTRAL_API_KEY` in Render. Mistral appears in the model selector and participates in compatibility fallback. To disable it, add `mistral` to `DISABLED_FEATURES`. The Image toggle uses Mistral's built-in image-generation agent tool.
+Set `MISTRAL_API_KEY` in Render using a Mistral Studio API key. Mistral appears in the model selector and participates in compatibility fallback. To disable it, add `mistral` to `DISABLED_FEATURES`. The Image toggle uses Mistral's built-in image-generation agent tool.
