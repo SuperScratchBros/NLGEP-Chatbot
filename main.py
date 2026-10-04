@@ -54,6 +54,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_SECRET_KEY = env_secret("SUPABASE_SECRET_KEY") or env_secret("SUPABASE_SERVICE_ROLE_KEY")
 GEMINI_KEY = "" if "gemini" in OFF else env_secret("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+CLOUD_CHAT_ON = "cloudchat" not in OFF and bool(SUPABASE_URL and SUPABASE_SECRET_KEY)
 ACCESS_CODE = os.getenv("ACCESS_CODE", "").strip()
 OR_KEY = "" if "openrouter" in OFF else env_secret("OPENROUTER_API_KEY")
 OR_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free").strip()  # free router picks a free model that supports tools
@@ -423,7 +424,7 @@ def generate_image(prompt: str, user: str) -> dict:
     """Generate an image through Hugging Face Inference Providers."""
     if not HF_TOKEN:
         raise RuntimeError("Hugging Face image generation is not configured.")
-    client = InferenceClient(provider="auto", api_key=HF_TOKEN)
+    client = InferenceClient(provider="hf-inference", api_key=HF_TOKEN)
     image = client.text_to_image(prompt, model=HF_IMAGE_MODEL)
     buf = io.BytesIO()
     image.save(buf, format="PNG")
@@ -554,8 +555,8 @@ class CloudChatRequest(BaseModel):
 @app.get("/api/cloud-chat/{chat_id}")
 def get_cloud_chat(chat_id: str, request: Request):
     check_rate_limit(request)
-    if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
-        raise HTTPException(503, "Supabase cloud chat is not configured.")
+    if not CLOUD_CHAT_ON:
+        raise HTTPException(404, "Cloud chat is turned off.")
     if not valid_chat_id(chat_id):
         raise HTTPException(400, "Invalid chat ID.")
     try:
@@ -576,8 +577,8 @@ def get_cloud_chat(chat_id: str, request: Request):
 @app.put("/api/cloud-chat/{chat_id}")
 def put_cloud_chat(chat_id: str, body: CloudChatRequest, request: Request):
     check_rate_limit(request)
-    if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
-        raise HTTPException(503, "Supabase cloud chat is not configured.")
+    if not CLOUD_CHAT_ON:
+        raise HTTPException(404, "Cloud chat is turned off.")
     if not valid_chat_id(chat_id):
         raise HTTPException(400, "Invalid chat ID.")
     payload = {"chat_id": chat_id, "messages": [m.model_dump() for m in body.messages]}
@@ -608,7 +609,7 @@ def config():
         "image": bool(HF_TOKEN) and "image" not in OFF,
         "image_provider": "Hugging Face" if HF_TOKEN else "",
         "image_model": HF_IMAGE_MODEL if HF_TOKEN else "",
-        "cloud_chat": bool(SUPABASE_URL and SUPABASE_SECRET_KEY),
+        "cloud_chat": CLOUD_CHAT_ON,
     }
 
 
