@@ -243,6 +243,10 @@ def client_ip(request: Request) -> str:
     return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown")
 
 
+def utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
 mem: dict[str, int] = {}
 
 
@@ -526,7 +530,7 @@ def session_user(request: Request):
         f"{SUPABASE_URL}/rest/v1/chat_sessions",
         headers=supabase_headers(),
         params={"select": "session_id,user_id,username", "session_id": f"eq.{session_id}",
-                "expires_at": "gt.now()", "limit": "1"},
+                "expires_at": f"gt.{utc_now()}", "limit": "1"},
         timeout=10,
     )
     if r.status_code != 200:
@@ -566,7 +570,11 @@ def create_chat_session(body: UsernameRequest, request: Request, response: Respo
     # A random session ID is the browser's login token. No password is stored.
     session_id = os.urandom(24).hex()
     try:
-        existing = supabase_rows("chat_users", {"select": "user_id,username", "username": f"eq.{username}", "limit": "1"})
+        existing = supabase_rows("chat_users", {
+            "select": "user_id,username",
+            "username": f"ilike.{username}",
+            "limit": "1",
+        })
         if existing:
             raise HTTPException(409, "That username is already taken. Choose another one.")
         user = supabase_rows("chat_users", {"select": "user_id,username"}, method="POST",
@@ -578,7 +586,9 @@ def create_chat_session(body: UsernameRequest, request: Request, response: Respo
                       payload={"session_id": session_id, "user_id": user["user_id"], "username": user["username"],
                                "expires_at": expires_at, "last_seen": now},
                       prefer="return=minimal")
-    except HTTPException:
+    except HTTPException as e:
+        if e.status_code == 502 and "duplicate key" in str(e.detail).lower():
+            raise HTTPException(409, "That username is already taken. Choose another one.")
         raise
     except Exception as e:
         raise HTTPException(502, f"Could not create chat session: {scrub(e)}")
@@ -613,7 +623,7 @@ def chat_users(request: Request):
     rows = supabase_rows("chat_sessions", {
         "select": "user_id,username,last_seen",
         "last_seen": f"gt.{cutoff}",
-        "expires_at": "gt.now()",
+        "expires_at": f"gt.{utc_now()}",
         "order": "username.asc",
         "limit": "100",
     })
