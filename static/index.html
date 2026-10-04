@@ -45,12 +45,15 @@ form button:disabled{opacity:.5;cursor:default}
 .aux.on{background:#b3261e;border-color:#b3261e;color:#fff}
 textarea{min-width:0}
 .bar{margin-top:6px;display:flex;gap:6px}.bar button{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:1px 8px;font:inherit;font-size:12px;cursor:pointer}
-[data-off~="voice"] #mic,[data-off~="attach"] #attach,[data-off~="listen"] .listen{display:none}
+[data-off~="voice"] #mic,[data-off~="attach"] #attach,[data-off~="listen"] .listen,[data-off~="models"] #model{display:none}
+header{flex-wrap:wrap;gap:8px}
+header select{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:4px 6px;font:inherit;font-size:14px;max-width:12em}
+header select option{color:#000}
 </style>
 </head>
 <body>
 <main>
-  <header><h1>Chat <small id="left" style="font-weight:400;color:var(--muted);font-size:13px"></small></h1><div style="display:flex;gap:8px"><button id="export" type="button">Export</button><button id="clear" type="button">New chat</button></div></header>
+  <header><h1>Chat <small id="left" style="font-weight:400;color:var(--muted);font-size:13px"></small></h1><div style="display:flex;gap:8px;flex-wrap:wrap"><select id="model" aria-label="Model"><option value="auto">Auto (best available)</option></select><button id="export" type="button">Export</button><button id="clear" type="button">New chat</button></div></header>
   <div id="log" aria-live="polite"></div>
   <form id="form">
     <textarea id="input" rows="1" placeholder="Ask anything" aria-label="Message"></textarea>
@@ -194,7 +197,7 @@ form.addEventListener("submit", async e => {
   try {
     const res = await fetch("/api/chat", {
       method: "POST", signal: ctl.signal, headers: { "Content-Type": "application/json", "X-Access-Code": localStorage.getItem("code") || "" },
-      body: JSON.stringify({ messages: messages.map(({ role, content }) => ({ role, content })) })
+      body: JSON.stringify({ messages: messages.map(({ role, content }) => ({ role, content })), model: document.getElementById("model").value || "auto" })
     });
     if (res.status === 401) { localStorage.setItem("code", prompt("Enter the access code:") || ""); throw new Error("Access code needed. Enter it, then send again."); }
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(typeof d.detail === "string" ? d.detail : "Request failed"); }
@@ -247,7 +250,16 @@ function refreshLeft() {
 }
 fetch("/api/config").then(r => r.json()).then(c => { document.body.dataset.off = c.off.join(" "); }).catch(() => {});
 refreshLeft();
+const modelSel = document.getElementById("model");
+fetch("/api/models").then(r => r.json()).then(d => {
+  modelSel.innerHTML = "";
+  d.models.forEach(m => { const o = document.createElement("option"); o.value = m.id; o.textContent = m.label; modelSel.appendChild(o); });
+  let saved = null; try { saved = localStorage.getItem("model"); } catch (e) {}
+  if (saved && [...modelSel.options].some(o => o.value === saved)) modelSel.value = saved;
+}).catch(() => {});
+modelSel.onchange = () => { try { localStorage.setItem("model", modelSel.value); } catch (e) {} };
 render();
 </script>
 </body>
 </html>
+
