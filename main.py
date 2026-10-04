@@ -28,11 +28,11 @@ def env_secret(name: str) -> str:
     return value
 
 
-missing = [k for k in ("GROQ_API_KEY", "TAVILY_API_KEY") if not os.getenv(k)]
+missing = [k for k in ("GROQ_API_KEY", "TAVILY_API_KEY") if not env_secret(k)]
 if missing:
     raise RuntimeError(f"Missing environment variable(s): {', '.join(missing)}.")
-groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
-tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+groq_client = Groq(api_key=env_secret("GROQ_API_KEY"))
+tavily_client = TavilyClient(api_key=env_secret("TAVILY_API_KEY"))
 
 MAX_HISTORY, MAX_TOOL_ROUNDS, MAX_TOKENS = 10, 3, 1500
 # Feature switches: DISABLED_FEATURES=voice,attach,listen,weather,gemini,openrouter,image,limits,cloudchat,... (comma list)
@@ -62,7 +62,7 @@ if GEMINI_KEY:
                    GEMINI_KEY, GEMINI_MODEL, {"x-goog-api-key": GEMINI_KEY}, "Google"))
 if OR_KEY:
     COMPAT.append(("openrouter", "https://openrouter.ai/api/v1/chat/completions",
-                   OR_KEY, OR_MODEL, {"X-Title": "NLGEP Chatbot"}, "OpenRouter"))  # optional: set to require a password
+                   OR_KEY, OR_MODEL, {"X-Title": "NLGEP Chatbot"}, "OpenRouter"))
 RATE_LIMIT_IP, RATE_LIMIT_GLOBAL, MAX_AUDIO = 20, 120, 5_000_000
 UA = {"User-Agent": "nlgep-chatbot/1.0"}
 
@@ -363,7 +363,7 @@ def model_choices():
 def scrub(text) -> str:
     """Hide any secret that ends up inside an error message."""
     text = str(text)
-    for v in (os.getenv("GROQ_API_KEY", ""), os.getenv("TAVILY_API_KEY", ""), GEMINI_KEY, OR_KEY, SUPABASE_SECRET_KEY, UP_TOKEN):
+    for v in (env_secret("GROQ_API_KEY"), env_secret("TAVILY_API_KEY"), GEMINI_KEY, OR_KEY, SUPABASE_SECRET_KEY, UP_TOKEN):
         v = v.strip()
         if len(v) > 4:
             text = text.replace(v, "***")
@@ -511,9 +511,10 @@ def chat(body: ChatRequest, request: Request):
     refund = None
     if LIMITS_ON:
         key, limit = f"u:{today()}:{client_ip(request)}", daily_limit()
-        if kv_get(key) >= limit:
+        # Count first, then check: this is atomic, so simultaneous requests can't slip past the limit.
+        if incr(key) > limit:
+            incr(key, -1)
             raise HTTPException(429, f"Daily limit reached ({limit} messages today). It resets at midnight UTC.")
-        incr(key)
         refund = lambda: incr(key, -1)  # failed replies don't use up a message
     return StreamingResponse(run_chat(msgs, refund, client_ip(request), body.model), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -552,6 +553,9 @@ def supabase_headers():
 
 SESSION_COOKIE = "infinet_session"
 SESSION_MAX_AGE = 60 * 60 * 24 * 30
+SESSION_CACHE_TTL = 20  # seconds; polling reuses the session lookup instead of asking Supabase every time
+sb_http = httpx.Client(timeout=10)  # shared client keeps connections open, so each Supabase call is much faster
+_session_cache: dict[str, tuple[float, dict]] = {}
 
 
 class UsernameRequest(BaseModel):
@@ -570,35 +574,38 @@ def session_user(request: Request):
     session_id = request.cookies.get(SESSION_COOKIE, "")
     if not session_id or not supabase_configured():
         return None
-    r = httpx.get(
+    cached = _session_cache.get(session_id)
+    if cached and time.time() - cached[0] < SESSION_CACHE_TTL:
+        return cached[1]
+    r = sb_http.get(
         f"{SUPABASE_URL}/rest/v1/chat_sessions",
         headers=supabase_headers(),
         params={"select": "session_id,user_id,username,last_seen", "session_id": f"eq.{session_id}",
                 "expires_at": f"gt.{utc_now()}", "limit": "1"},
-        timeout=10,
     )
     if r.status_code != 200:
         raise HTTPException(502, f"Session lookup failed: {scrub(r.text[:300])}")
     rows = r.json()
-    if rows:
-        # Polling can hit this endpoint every few seconds. Only write presence
-        # periodically so chat polling does not create unnecessary DB writes.
+    if not rows:
+        _session_cache.pop(session_id, None)
+        return None
+    row = rows[0]
+    # Only write presence periodically so polling does not create unnecessary DB writes.
+    try:
+        last_seen = datetime.fromisoformat(str(row.get("last_seen", "")).replace("Z", "+00:00"))
+        should_touch = (datetime.now(timezone.utc) - last_seen).total_seconds() >= 15
+    except Exception:
         should_touch = True
+    if should_touch:
         try:
-            last_seen = rows[0].get("last_seen", "")
-            if last_seen:
-                last_seen_dt = __import__("datetime").datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
-                should_touch = (__import__("datetime").datetime.now(__import__("datetime").timezone.utc) - last_seen_dt).total_seconds() >= 15
-        except Exception:
-            should_touch = True
-        if should_touch:
-            try:
-                supabase_rows("chat_sessions", {"session_id": f"eq.{session_id}"}, method="PATCH",
-                              payload={"last_seen": utc_now()},
-                              prefer="return=minimal")
-            except HTTPException:
-                pass
-    return rows[0] if rows else None
+            supabase_rows("chat_sessions", {"session_id": f"eq.{session_id}"}, method="PATCH",
+                          payload={"last_seen": utc_now()}, prefer="return=minimal")
+        except HTTPException:
+            pass
+    if len(_session_cache) > 2000:
+        _session_cache.clear()
+    _session_cache[session_id] = (time.time(), row)
+    return row
 
 
 def supabase_rows(table: str, params=None, method="GET", payload=None, prefer=None):
@@ -607,8 +614,8 @@ def supabase_rows(table: str, params=None, method="GET", payload=None, prefer=No
     headers = supabase_headers()
     if prefer:
         headers["Prefer"] = prefer
-    r = httpx.request(method, f"{SUPABASE_URL}/rest/v1/{table}", headers=headers,
-                      params=params or {}, json=payload, timeout=10)
+    r = sb_http.request(method, f"{SUPABASE_URL}/rest/v1/{table}", headers=headers,
+                        params=params or {}, json=payload)
     if r.status_code not in (200, 201, 204):
         raise HTTPException(502, f"Supabase request failed ({r.status_code}): {scrub(r.text[:300])}")
     return r.json() if r.text else []
@@ -622,13 +629,15 @@ def create_chat_session(body: UsernameRequest, request: Request, response: Respo
     username = " ".join(body.username.strip().split())
     if not username:
         raise HTTPException(400, "Username cannot be empty.")
+    old_session = request.cookies.get(SESSION_COOKIE, "")
     # A random session ID is the browser's login token. No password is stored.
     session_id = os.urandom(24).hex()
     user = None
     try:
+        # ilike treats "_" as "any single character", so escape it to match the name exactly (ignoring case).
         existing = supabase_rows("chat_users", {
             "select": "user_id,username",
-            "username": f"ilike.{username}",
+            "username": "ilike." + username.replace("\\", "\\\\").replace("_", "\\_"),
             "limit": "1",
         })
         if existing:
@@ -659,13 +668,21 @@ def create_chat_session(body: UsernameRequest, request: Request, response: Respo
                 pass
         raise HTTPException(502, f"Could not create chat session: {scrub(e)}")
     response.set_cookie(SESSION_COOKIE, session_id, max_age=SESSION_MAX_AGE, httponly=True, samesite="lax", secure=request.url.scheme == "https")
+    if old_session:
+        # Switching names: end the old session so you don't show up online twice.
+        _session_cache.pop(old_session, None)
+        try:
+            supabase_rows("chat_sessions", {"session_id": f"eq.{old_session}"}, method="DELETE")
+        except Exception:
+            pass
     return {"username": user["username"]}
 
 
 @app.delete("/api/chat-session")
-def delete_chat_session(request: Request, response):
+def delete_chat_session(request: Request, response: Response):
     session_id = request.cookies.get(SESSION_COOKIE, "")
     response.delete_cookie(SESSION_COOKIE)
+    _session_cache.pop(session_id, None)
     if session_id and supabase_configured():
         try:
             supabase_rows("chat_sessions", {"session_id": f"eq.{session_id}"}, method="DELETE")
@@ -676,7 +693,9 @@ def delete_chat_session(request: Request, response):
 
 @app.get("/api/chat-me")
 def chat_me(request: Request):
-    return {"user": session_user(request)}
+    u = session_user(request)
+    # Never send the session ID to the browser: the cookie is HttpOnly so scripts can't read it.
+    return {"user": {"user_id": u["user_id"], "username": u["username"]} if u else None}
 
 
 @app.get("/api/chat-users")
@@ -707,14 +726,15 @@ def chat_messages(request: Request, after: str = ""):
     me = session_user(request)
     if not me:
         raise HTTPException(401, "Choose a username first.")
-    params = {
-        "select": "message_id,user_id,username,content,created_at",
-        "order": "message_id.asc",
-        "limit": "100",
-    }
+    params = {"select": "message_id,user_id,username,content,created_at"}
     if after and after.isdigit():
-        params["message_id"] = f"gt.{after}"
-    rows = supabase_rows("chat_messages", params)
+        # Polling: everything newer than the last message the browser already has.
+        params.update({"message_id": f"gt.{after}", "order": "message_id.asc", "limit": "100"})
+        rows = supabase_rows("chat_messages", params)
+    else:
+        # First load: the latest 50 messages (not the oldest 100), shown oldest-first.
+        params.update({"order": "message_id.desc", "limit": "50"})
+        rows = list(reversed(supabase_rows("chat_messages", params)))
     return {"messages": rows, "me": me["username"]}
 
 
@@ -772,4 +792,3 @@ def ai():
 @app.get("/chat")
 def chatting():
     return FileResponse(BASE_DIR / "static" / "chatting.html")
-
