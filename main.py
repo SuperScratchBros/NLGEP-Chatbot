@@ -1,11 +1,11 @@
-import ast, base64, hashlib, hmac, io, json, math, operator, os, re, time
+import ast, hashlib, hmac, json, math, operator, os, re, time
 from collections import defaultdict, deque
 from datetime import date
 from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -526,12 +526,20 @@ def session_user(request: Request):
     r = httpx.get(
         f"{SUPABASE_URL}/rest/v1/chat_sessions",
         headers=supabase_headers(),
-        params={"select": "session_id,user_id,username", "session_id": f"eq.{session_id}", "limit": "1"},
+        params={"select": "session_id,user_id,username", "session_id": f"eq.{session_id}",
+                "expires_at": "gt.now()", "limit": "1"},
         timeout=10,
     )
     if r.status_code != 200:
         raise HTTPException(502, f"Session lookup failed: {scrub(r.text[:300])}")
     rows = r.json()
+    if rows:
+        try:
+            supabase_rows("chat_sessions", {"session_id": f"eq.{session_id}"}, method="PATCH",
+                          payload={"last_seen": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+                          prefer="return=minimal")
+        except HTTPException:
+            pass
     return rows[0] if rows else None
 
 
@@ -549,7 +557,7 @@ def supabase_rows(table: str, params=None, method="GET", payload=None, prefer=No
 
 
 @app.post("/api/chat-session")
-def create_chat_session(body: UsernameRequest, request: Request, response):
+def create_chat_session(body: UsernameRequest, request: Request, response: Response):
     check_rate_limit(request)
     if not supabase_configured():
         raise HTTPException(503, "Supabase chat is not configured. Add SUPABASE_URL and SUPABASE_SECRET_KEY in Render.")
@@ -561,14 +569,15 @@ def create_chat_session(body: UsernameRequest, request: Request, response):
     try:
         existing = supabase_rows("chat_users", {"select": "user_id,username", "username": f"eq.{username}", "limit": "1"})
         if existing:
-            user = existing[0]
-        else:
-            user = supabase_rows("chat_users", {"select": "user_id,username"}, method="POST",
-                                 payload={"username": username},
-                                 prefer="return=representation")[0]
+            raise HTTPException(409, "That username is already taken. Choose another one.")
+        user = supabase_rows("chat_users", {"select": "user_id,username"}, method="POST",
+                             payload={"username": username},
+                             prefer="return=representation")[0]
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        expires_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + SESSION_MAX_AGE))
         supabase_rows("chat_sessions", method="POST",
                       payload={"session_id": session_id, "user_id": user["user_id"], "username": user["username"],
-                               "expires_at": (date.today()).isoformat()},
+                               "expires_at": expires_at, "last_seen": now},
                       prefer="return=minimal")
     except HTTPException:
         raise
@@ -595,6 +604,30 @@ def delete_chat_session(request: Request, response):
 def chat_me(request: Request):
     check_rate_limit(request)
     return {"user": session_user(request)}
+
+
+@app.get("/api/chat-users")
+def chat_users(request: Request):
+    check_rate_limit(request)
+    me = session_user(request)
+    if not me:
+        raise HTTPException(401, "Choose a username first.")
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 120))
+    rows = supabase_rows("chat_sessions", {
+        "select": "user_id,username,last_seen",
+        "last_seen": f"gt.{cutoff}",
+        "expires_at": "gt.now()",
+        "order": "username.asc",
+        "limit": "100",
+    })
+    seen = set()
+    users = []
+    for row in rows:
+        if row["user_id"] in seen:
+            continue
+        seen.add(row["user_id"])
+        users.append({"user_id": row["user_id"], "username": row["username"]})
+    return {"users": users, "count": len(users)}
 
 
 @app.get("/api/chat-messages")
@@ -659,3 +692,13 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 @app.get("/")
 def index():
     return FileResponse(BASE_DIR / "static" / "index.html")
+
+
+@app.get("/ai")
+def ai():
+    return FileResponse(BASE_DIR / "static" / "ai.html")
+
+
+@app.get("/chat")
+def chatting():
+    return FileResponse(BASE_DIR / "static" / "chatting.html")
