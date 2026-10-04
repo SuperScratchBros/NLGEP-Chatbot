@@ -41,6 +41,9 @@ form button:disabled{opacity:.5;cursor:default}
 .md th,.md td{border:1px solid var(--line);padding:4px 10px;text-align:left}
 .md hr{border:0;border-top:1px solid var(--line)}
 .md .katex-display{overflow-x:auto;overflow-y:hidden;padding:2px 0}
+.aux{background:none;border:1px solid var(--line);color:var(--muted);border-radius:10px;padding:0 12px;font:inherit;cursor:pointer;max-width:9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.aux.on{background:#b3261e;border-color:#b3261e;color:#fff}
+textarea{min-width:0}
 </style>
 </head>
 <body>
@@ -49,6 +52,9 @@ form button:disabled{opacity:.5;cursor:default}
   <div id="log" aria-live="polite"></div>
   <form id="form">
     <textarea id="input" rows="1" placeholder="Ask anything" aria-label="Message"></textarea>
+    <button type="button" id="attach" class="aux">Attach</button>
+    <button type="button" id="mic" class="aux">Mic</button>
+    <input type="file" id="file" hidden accept=".txt,.md,.csv,.json,.py,.js,.html,.css,.log,text/*">
     <button id="send">Send</button>
   </form>
 </main>
@@ -113,32 +119,99 @@ function render() {
     log.innerHTML = '<p class="empty">Ask a question. I can search the web for current information.</p>';
     return;
   }
-  messages.forEach(m => add(m.role, m.content, m.sources));
+  messages.forEach(m => add(m.role, m.display || m.content, m.sources));
 }
+
+let attached = null;
+const attachBtn = document.getElementById("attach"), fileIn = document.getElementById("file"), mic = document.getElementById("mic");
+
+function flash(msg) {
+  const d = document.createElement("div"); d.className = "status"; d.textContent = msg;
+  log.appendChild(d); log.scrollTop = log.scrollHeight; setTimeout(() => d.remove(), 6000);
+}
+
+attachBtn.onclick = () => {
+  if (attached) { attached = null; attachBtn.textContent = "Attach"; attachBtn.classList.remove("on"); fileIn.value = ""; }
+  else fileIn.click();
+};
+fileIn.onchange = async () => {
+  const f = fileIn.files[0]; if (!f) return;
+  if (f.size > 200000) { flash("That file is over 200 KB. Attach a smaller text file."); fileIn.value = ""; return; }
+  let t = await f.text(), cut = t.length > 8000; if (cut) t = t.slice(0, 8000);
+  attached = { name: f.name, text: t + (cut ? "\n[truncated]" : "") };
+  attachBtn.textContent = f.name; attachBtn.classList.add("on");
+  if (cut) flash("Only the first 8,000 characters of the file are sent.");
+};
+
+let rec, chunks = [];
+mic.onclick = async () => {
+  if (rec && rec.state === "recording") { rec.stop(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    rec = new MediaRecorder(stream); chunks = [];
+    rec.ondataavailable = e => chunks.push(e.data);
+    rec.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop()); mic.textContent = "Mic"; mic.classList.remove("on");
+      const type = (rec.mimeType || "audio/webm").split(";")[0];
+      try {
+        const r = await fetch("/api/transcribe", { method: "POST", headers: { "Content-Type": type }, body: new Blob(chunks, { type }) });
+        const d = await r.json();
+        if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : "Transcription failed");
+        input.value = (input.value + " " + d.text).trim(); input.dispatchEvent(new Event("input")); input.focus();
+      } catch (err) { flash("Voice input failed: " + err.message); }
+    };
+    rec.start(); mic.textContent = "Stop"; mic.classList.add("on");
+  } catch (e) { flash("Microphone access was blocked. Allow it in your browser settings."); }
+};
 
 form.addEventListener("submit", async e => {
   e.preventDefault();
-  const text = input.value.trim();
-  if (!text || send.disabled) return;
+  const typed = input.value.trim();
+  if ((!typed && !attached) || send.disabled) return;
+  const shown = (attached ? "Attached: " + attached.name + "\n" : "") + typed;
+  const full = attached ? 'Attached file "' + attached.name + '":\n```\n' + attached.text + "\n```\n\n" + typed : typed;
   if (!messages.length) log.innerHTML = "";
-  messages.push({ role: "user", content: text });
-  const bubble = add("user", text); input.value = ""; input.style.height = "auto"; send.disabled = true;
+  messages.push({ role: "user", content: full, display: shown });
+  const bubble = add("user", shown); input.value = ""; input.style.height = "auto"; send.disabled = true;
+  const keep = attached; attached = null; attachBtn.textContent = "Attach"; attachBtn.classList.remove("on"); fileIn.value = "";
 
   const status = document.createElement("div"); status.className = "status"; status.textContent = "Thinking...";
   log.appendChild(status); log.scrollTop = log.scrollHeight;
   const wake = setTimeout(() => status.textContent = "The server is waking up. This can take up to a minute.", 6000);
+  let live = null, body = null, text = "", sources = [], raf = 0;
+  const paint = () => { raf = 0; const h = renderMarkdown(text); if (h === null) { body.style.whiteSpace = "pre-wrap"; body.textContent = text; } else body.innerHTML = h; log.scrollTop = log.scrollHeight; };
 
   try {
     const res = await fetch("/api/chat", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messages: messages.map(({ role, content }) => ({ role, content })) })
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Request failed");
-    messages.push({ role: "assistant", content: data.reply, sources: data.sources });
-    status.remove(); add("assistant", data.reply, data.sources); save();
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(typeof d.detail === "string" ? d.detail : "Request failed"); }
+    const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (!line.startsWith("data: ")) continue;
+        const ev = JSON.parse(line.slice(6));
+        if (ev.t === "status") status.textContent = ev.v;
+        else if (ev.t === "token") {
+          if (!live) { status.remove(); live = add("assistant", ""); body = live.querySelector(".md"); }
+          text += ev.v; if (!raf) raf = requestAnimationFrame(paint);
+        } else if (ev.t === "sources") sources = ev.v;
+        else if (ev.t === "error") throw new Error(ev.v);
+      }
+    }
+    if (raf) cancelAnimationFrame(raf);
+    if (!text) throw new Error("Empty reply");
+    if (live) live.remove(); status.remove();
+    messages.push({ role: "assistant", content: text, sources }); add("assistant", text, sources); save();
   } catch (err) {
-    messages.pop(); bubble.remove(); input.value = text;
+    if (live) live.remove();
+    messages.pop(); bubble.remove(); input.value = typed;
+    if (keep) { attached = keep; attachBtn.textContent = keep.name; attachBtn.classList.add("on"); }
     status.textContent = "Error: " + err.message + " Your message is back in the box. Send it again.";
   } finally { clearTimeout(wake); send.disabled = false; input.focus(); }
 });
@@ -150,3 +223,4 @@ render();
 </script>
 </body>
 </html>
+
