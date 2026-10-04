@@ -11,10 +11,6 @@ services:
         sync: false
       - key: TAVILY_API_KEY
         sync: false
-      - key: HF_TOKEN
-        sync: false
-      - key: HF_IMAGE_MODEL
-        value: black-forest-labs/FLUX.1-schnell
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SECRET_KEY
