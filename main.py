@@ -39,6 +39,7 @@ BUDGET = {
 }
 UP_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")   # optional: makes counters survive restarts
 UP_TOKEN = env_secret("UPSTASH_REDIS_REST_TOKEN")
+UPSTASH_DISABLED = False
 GEMINI_KEY = "" if "gemini" in OFF else env_secret("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 def env_secret(name: str) -> str:
@@ -258,17 +259,24 @@ mem: dict[str, int] = {}
 
 
 def _up(cmds):
+    if not UP_URL or not UP_TOKEN or UPSTASH_DISABLED:
+        raise RuntimeError("Upstash unavailable")
     r = httpx.post(UP_URL + "/pipeline", headers={"Authorization": "Bearer " + UP_TOKEN}, json=cmds, timeout=5)
     r.raise_for_status()
     return [x.get("result") for x in r.json()]
 
 
 def incr(key: str, n: int = 1) -> int:
-    if UP_URL:
+    global UPSTASH_DISABLED
+    if UP_URL and UP_TOKEN and not UPSTASH_DISABLED:
         try:
             return int(_up([["INCRBY", key, n], ["EXPIRE", key, 172800]])[0])
         except Exception as e:
-            print("Upstash error:", e, flush=True)
+            if "401" in str(e) or "Unauthorized" in str(e):
+                UPSTASH_DISABLED = True
+                print("Upstash authentication failed; using in-memory counters for this process.", flush=True)
+            else:
+                print("Upstash error:", e, flush=True)
     if len(mem) > 3000:
         for k in [k for k in mem if f":{today()}:" not in k]:
             del mem[k]
@@ -277,11 +285,16 @@ def incr(key: str, n: int = 1) -> int:
 
 
 def kv_get(key: str) -> int:
-    if UP_URL:
+    global UPSTASH_DISABLED
+    if UP_URL and UP_TOKEN and not UPSTASH_DISABLED:
         try:
             return int(_up([["GET", key]])[0] or 0)
         except Exception as e:
-            print("Upstash error:", e, flush=True)
+            if "401" in str(e) or "Unauthorized" in str(e):
+                UPSTASH_DISABLED = True
+                print("Upstash authentication failed; using in-memory counters for this process.", flush=True)
+            else:
+                print("Upstash error:", e, flush=True)
     return mem.get(key, 0)
 
 
