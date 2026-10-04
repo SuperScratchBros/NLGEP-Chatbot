@@ -52,7 +52,6 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 MISTRAL_KEY = "" if "mistral" in OFF else env_secret("MISTRAL_API_KEY")
 MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-latest").strip()
 MISTRAL_IMAGE_MODEL = os.getenv("MISTRAL_IMAGE_MODEL", "mistral-medium-latest").strip()
-MISTRAL_IMAGE_AGENT_ID = os.getenv("MISTRAL_IMAGE_AGENT_ID", "").strip()
 ACCESS_CODE = os.getenv("ACCESS_CODE", "").strip()
 OR_KEY = "" if "openrouter" in OFF else env_secret("OPENROUTER_API_KEY")
 OR_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free").strip()  # free router picks a free model that supports tools
