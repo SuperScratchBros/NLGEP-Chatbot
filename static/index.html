@@ -60,7 +60,7 @@ header select option{color:#000}
     <button type="button" id="attach" class="aux">Attach</button>
     <button type="button" id="mic" class="aux">Mic</button>
     <input type="file" id="file" hidden accept=".txt,.md,.csv,.json,.py,.js,.html,.css,.log,text/*">
-    <button id="send">Send</button>
+    <button type="button" id="imageBtn" class="aux">Image</button><button id="send">Send</button>
   </form>
 </main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
@@ -136,6 +136,14 @@ function render() {
 
 let attached = null, ctl = null;
 const attachBtn = document.getElementById("attach"), fileIn = document.getElementById("file"), mic = document.getElementById("mic");
+const imageBtn = document.getElementById("imageBtn");
+let imageMode = false;
+imageBtn.onclick = () => {
+  imageMode = !imageMode;
+  imageBtn.classList.toggle("on", imageMode);
+  imageBtn.textContent = imageMode ? "Image ON" : "Image";
+  input.placeholder = imageMode ? "Describe the image you want Mistral to generate" : "Ask anything";
+};
 
 function flash(msg) {
   const d = document.createElement("div"); d.className = "status"; d.textContent = msg;
@@ -181,6 +189,39 @@ form.addEventListener("submit", async e => {
   const typed = input.value.trim();
   if (ctl) { ctl.abort(); return; }
   if (!typed && !attached) return;
+  if (imageMode) {
+    const prompt = typed;
+    if (!prompt) return;
+    if (!messages.length) log.innerHTML = "";
+    messages.push({ role: "user", content: "Generate an image: " + prompt, display: "Generate image: " + prompt });
+    const bubble = add("user", "Generate image: " + prompt); input.value = ""; input.style.height = "auto";
+    ctl = new AbortController(); send.textContent = "Stop";
+    const status = document.createElement("div"); status.className = "status"; status.textContent = "Generating image with Mistral...";
+    log.appendChild(status);
+    try {
+      const res = await fetch("/api/generate-image", {
+        method: "POST", signal: ctl.signal,
+        headers: {"Content-Type":"application/json","X-Access-Code":localStorage.getItem("code") || ""},
+        body: JSON.stringify({prompt})
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof d.detail === "string" ? d.detail : "Image generation failed");
+      status.remove();
+      const wrap = document.createElement("div"); wrap.className = "msg bot";
+      const img = document.createElement("img"); img.src = d.url; img.alt = prompt; img.style.maxWidth = "100%"; img.style.borderRadius = "10px";
+      wrap.appendChild(img);
+      if (d.text) { const p=document.createElement("div"); p.textContent=d.text; wrap.appendChild(p); }
+      log.appendChild(wrap); log.scrollTop=log.scrollHeight;
+      messages.push({role:"assistant", content:"[Generated image]", display:"[Generated image]", image:d.url}); save();
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        messages.pop(); bubble.remove(); status.textContent = "Error: " + err.message;
+      } else {
+        messages.pop(); bubble.remove(); status.remove();
+      }
+    } finally { ctl=null; send.textContent="Send"; input.focus(); }
+    return;
+  }
   const shown = (attached ? "Attached: " + attached.name + "\n" : "") + typed;
   const full = attached ? 'Attached file "' + attached.name + '":\n```\n' + attached.text + "\n```\n\n" + typed : typed;
   if (!messages.length) log.innerHTML = "";
