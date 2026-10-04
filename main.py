@@ -190,6 +190,7 @@ class Message(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[Message]
+    model: str = "auto"
 
 
 def check_rate_limit(request: Request) -> None:
@@ -269,14 +270,21 @@ def daily_limit() -> int:
     return max(LIMIT_MIN, round(LIMIT_MAX - (LIMIT_MAX - LIMIT_MIN) * usage_load()))
 
 
+def model_choices():
+    out = [{"id": "groq:" + m, "label": m.split("/")[-1] + " (Groq)"} for m in [MODEL] + FALLBACK_MODELS]
+    if GEMINI_KEY:
+        out.append({"id": "gemini:" + GEMINI_MODEL, "label": GEMINI_MODEL + " (Google)"})
+    return out
+
+
 def sse(obj) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
-def start_stream(msgs):
+def start_stream(msgs, first=None):
     """Open a streaming completion. Waits out short rate limits, then tries fallback models."""
     err = None
-    for model in [MODEL] + FALLBACK_MODELS:
+    for model in ([first] if first else []) + [m for m in [MODEL] + FALLBACK_MODELS if m != first]:
         for attempt in range(2):
             try:
                 return groq_client.chat.completions.create(
@@ -311,10 +319,16 @@ def gemini_turn(msgs):
     return m.get("content") or "", calls
 
 
-def model_turn(msgs, user="?"):
+def model_turn(msgs, user="?", choice="auto"):
     """One model call. Streams tokens as events; returns (text, tool_calls)."""
+    if choice.startswith("gemini:") and GEMINI_KEY:
+        record_call("gemini", GEMINI_MODEL, user)
+        text, calls = gemini_turn(msgs)
+        if text:
+            yield sse({"t": "token", "v": text})
+        return text, calls
     try:
-        stream, used = start_stream(msgs)
+        stream, used = start_stream(msgs, choice[5:] if choice.startswith("groq:") else None)
         record_call("groq", used, user)
     except (RateLimitError, NotFoundError):
         if not GEMINI_KEY:
@@ -341,14 +355,14 @@ def model_turn(msgs, user="?"):
     return text, calls
 
 
-def run_chat(msgs, refund=None, user="?"):
+def run_chat(msgs, refund=None, user="?", choice="auto"):
     sources, answered = [], False
     try:
         for rnd in range(MAX_TOOL_ROUNDS + 1):
             last = rnd == MAX_TOOL_ROUNDS
             if last:
                 msgs.append({"role": "system", "content": "Tool limit reached. Answer now using what you have. Do not call tools."})
-            text, calls = yield from model_turn(msgs, user)
+            text, calls = yield from model_turn(msgs, user, choice)
             answered = answered or bool(text)
             if not calls or last:
                 break
@@ -390,6 +404,8 @@ def chat(body: ChatRequest, request: Request):
     if history[0]["role"] != "user":
         history = history[1:]
     msgs = [{"role": "system", "content": SYSTEM_PROMPT.format(today=date.today().isoformat())}] + history
+    if body.model != "auto" and body.model not in {m["id"] for m in model_choices()}:
+        raise HTTPException(400, "Unknown model.")
     refund = None
     if LIMITS_ON:
         key, limit = f"u:{today()}:{client_ip(request)}", daily_limit()
@@ -397,7 +413,7 @@ def chat(body: ChatRequest, request: Request):
             raise HTTPException(429, f"Daily limit reached ({limit} messages today). It resets at midnight UTC.")
         incr(key)
         refund = lambda: incr(key, -1)  # failed replies don't use up a message
-    return StreamingResponse(run_chat(msgs, refund, client_ip(request)), media_type="text/event-stream",
+    return StreamingResponse(run_chat(msgs, refund, client_ip(request), body.model), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
@@ -417,6 +433,11 @@ async def transcribe(request: Request):
     except Exception as e:
         raise HTTPException(502, f"Transcription failed: {e}")
     return {"text": res.text}
+
+
+@app.get("/api/models")
+def models():
+    return {"models": [{"id": "auto", "label": "Auto (best available)"}] + model_choices()}
 
 
 @app.get("/api/config")
