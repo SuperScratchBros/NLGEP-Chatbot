@@ -1,6 +1,6 @@
-# AI Chatbot (Groq + Tavily)
+# AI Chatbot Models: Groq+Tavily+Gemini+Openrouter
 
-A small web chatbot. Groq writes the answers, Tavily provides web search when the model needs current info. Built to run on Render's free tier.
+A small web chatbot. Models include OpenAI Chat GPT 4.0, Gemini 3.8 Flash, and mixed. Tavily provides web search when the model needs current info. Built to run on Render's free tier.
 
 ## Run locally
 ```bash
