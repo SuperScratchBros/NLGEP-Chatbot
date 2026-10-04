@@ -401,56 +401,19 @@ def model_turn(msgs, user="?", choice="auto"):
     return text, calls
 
 
-def mistral_image_agent() -> str:
-    """Create/cache a Mistral agent that has access to the image-generation tool."""
-    global MISTRAL_IMAGE_AGENT_ID
+def generate_mistral_image(prompt: str, user: str) -> dict:
+    """Generate one image using Mistral's built-in image_generation tool."""
     if not MISTRAL_KEY:
         raise RuntimeError("Mistral is not configured.")
-    if MISTRAL_IMAGE_AGENT_ID:
-        return MISTRAL_IMAGE_AGENT_ID
-    r = httpx.post(
-        "https://api.mistral.ai/v1/agents",
-        headers={"Authorization": f"Bearer {MISTRAL_KEY}", "Content-Type": "application/json"},
-        timeout=60,
-        json={
-            "model": MISTRAL_IMAGE_MODEL,
-            "name": "NLGEP Chatbot Image Generator",
-            "description": "Image generation agent for the NLGEP Chatbot.",
-            "instructions": "Generate an image when the user asks for one. Use the image_generation tool.",
-            "tools": [{"type": "image_generation"}],
-        },
-    )
-    if r.status_code != 200:
-        print("Mistral image agent failed:", r.status_code, scrub(r.text[:300]), flush=True)
-        r.raise_for_status()
-    MISTRAL_IMAGE_AGENT_ID = r.json()["id"]
-    return MISTRAL_IMAGE_AGENT_ID
-
-
-def _find_tool_file(value):
-    if isinstance(value, dict):
-        if value.get("type") == "tool_file" and value.get("file_id"):
-            return value
-        for child in value.values():
-            found = _find_tool_file(child)
-            if found:
-                return found
-    elif isinstance(value, list):
-        for child in value:
-            found = _find_tool_file(child)
-            if found:
-                return found
-    return None
-
-
-def generate_mistral_image(prompt: str, user: str) -> dict:
-    """Generate one image through Mistral's image_generation agent tool."""
-    agent_id = mistral_image_agent()
     r = httpx.post(
         "https://api.mistral.ai/v1/conversations",
         headers={"Authorization": f"Bearer {MISTRAL_KEY}", "Content-Type": "application/json"},
         timeout=120,
-        json={"agent_id": agent_id, "inputs": prompt},
+        json={
+            "model": MISTRAL_IMAGE_MODEL,
+            "inputs": prompt,
+            "tools": [{"type": "image_generation"}],
+        },
     )
     if r.status_code != 200:
         print("Mistral image generation failed:", r.status_code, scrub(r.text[:300]), flush=True)
@@ -458,7 +421,7 @@ def generate_mistral_image(prompt: str, user: str) -> dict:
     data = r.json()
     chunk = _find_tool_file(data.get("outputs", []))
     if not chunk:
-        raise RuntimeError("Mistral returned no generated image file.")
+        raise RuntimeError("Mistral completed the request but returned no generated image file.")
     file_id = chunk["file_id"]
     u = httpx.get(
         f"https://api.mistral.ai/v1/files/{file_id}/url",
@@ -471,7 +434,7 @@ def generate_mistral_image(prompt: str, user: str) -> dict:
         u.raise_for_status()
     signed = u.json().get("url")
     if not signed:
-        raise RuntimeError("Mistral did not return a download URL for the generated image.")
+        raise RuntimeError("Mistral did not return an image URL.")
     text_parts = []
     for output in data.get("outputs", []):
         content = output.get("content") if isinstance(output, dict) else None
@@ -593,6 +556,25 @@ def image_url(file_id: str, request: Request):
     if not signed:
         raise HTTPException(502, "Mistral did not return an image URL.")
     return {"url": signed}
+
+
+@app.get("/api/mistral-status")
+def mistral_status():
+    if not MISTRAL_KEY:
+        return {"configured": False, "valid": False}
+    try:
+        r = httpx.get(
+            "https://api.mistral.ai/v1/models",
+            headers={"Authorization": f"Bearer {MISTRAL_KEY}"},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            return {"configured": True, "valid": True}
+        if r.status_code == 401:
+            return {"configured": True, "valid": False, "error": "Invalid Mistral API key"}
+        return {"configured": True, "valid": False, "error": f"Mistral returned HTTP {r.status_code}"}
+    except Exception as e:
+        return {"configured": True, "valid": False, "error": scrub(e)}
 
 
 @app.post("/api/transcribe")
