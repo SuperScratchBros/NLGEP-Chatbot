@@ -1,4 +1,4 @@
-import ast, json, math, operator, os, time
+import ast, hashlib, hmac, json, math, operator, os, re, time
 from collections import defaultdict, deque
 from datetime import date
 from pathlib import Path
@@ -9,13 +9,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from groq import Groq
+from groq import Groq, NotFoundError, RateLimitError
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
 load_dotenv()
 BASE_DIR = Path(__file__).parent
 MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+FALLBACK_MODELS = [m.strip() for m in os.getenv("GROQ_FALLBACK_MODELS", "").split(",") if m.strip()]
 STT_MODEL = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
 
 missing = [k for k in ("GROQ_API_KEY", "TAVILY_API_KEY") if not os.getenv(k)]
@@ -24,7 +25,18 @@ if missing:
 groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
-MAX_HISTORY, MAX_TOOL_ROUNDS, MAX_TOKENS = 20, 4, 2048
+MAX_HISTORY, MAX_TOOL_ROUNDS, MAX_TOKENS = 10, 3, 1500
+# Feature switches: DISABLED_FEATURES=voice,attach,listen,weather,gemini,limits,... (comma list)
+OFF = {f.strip().lower() for f in os.getenv("DISABLED_FEATURES", "").split(",") if f.strip()}
+LIMITS_ON = "limits" not in OFF
+LIMIT_MAX = int(os.getenv("DAILY_LIMIT_MAX", "15"))   # messages/user/day when AI quota is fresh
+LIMIT_MIN = int(os.getenv("DAILY_LIMIT_MIN", "5"))    # messages/user/day when AI quota is nearly used up
+BUDGET = {"groq": int(os.getenv("DAILY_BUDGET_GROQ", "300")), "gemini": int(os.getenv("DAILY_BUDGET_GEMINI", "200"))}
+UP_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").rstrip("/")   # optional: makes counters survive restarts
+UP_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
+GEMINI_KEY = "" if "gemini" in OFF else os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+ACCESS_CODE = os.getenv("ACCESS_CODE", "")  # optional: set to require a password
 RATE_LIMIT_IP, RATE_LIMIT_GLOBAL, MAX_AUDIO = 20, 120, 5_000_000
 UA = {"User-Agent": "nlgep-chatbot/1.0"}
 
@@ -52,6 +64,13 @@ TOOLS = [
           {"amount": {"type": "number"}, "from_currency": S("e.g. USD"), "to_currency": S("e.g. EUR")},
           ["amount", "from_currency", "to_currency"]),
 ]
+
+TOOLS = [t for t in TOOLS if t["function"]["name"] not in OFF]
+
+
+def tool_args():
+    return {"tools": TOOLS, "tool_choice": "auto"} if TOOLS else {}
+
 
 OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
        ast.Pow: operator.pow, ast.Mod: operator.mod, ast.USub: operator.neg, ast.UAdd: operator.pos}
@@ -98,11 +117,11 @@ def add_source(sources, title, url):
 
 
 def web_search(query, sources):
-    res = tavily_client.search(query=query, max_results=4, search_depth="basic")
+    res = tavily_client.search(query=query, max_results=3, search_depth="basic")
     out = []
     for r in res.get("results", []):
         add_source(sources, r.get("title"), r.get("url"))
-        out.append(f"{r.get('title')}\n{r.get('url')}\n{(r.get('content') or '')[:500]}")
+        out.append(f"{r.get('title')}\n{r.get('url')}\n{(r.get('content') or '')[:350]}")
     return "\n\n".join(out) or "No results found."
 
 
@@ -114,7 +133,7 @@ def read_page(url, sources):
     if not items:
         return "Could not read that page."
     add_source(sources, url, url)
-    return (items[0].get("raw_content") or "")[:6000] or "Page had no readable text."
+    return (items[0].get("raw_content") or "")[:4000] or "Page had no readable text."
 
 
 def weather(location, sources):
@@ -174,6 +193,8 @@ class ChatRequest(BaseModel):
 
 
 def check_rate_limit(request: Request) -> None:
+    if ACCESS_CODE and not hmac.compare_digest(request.headers.get("x-access-code", ""), ACCESS_CODE):
+        raise HTTPException(401, "Access code required.")
     fwd = request.headers.get("x-forwarded-for")
     ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown")
     now = time.time()
@@ -190,32 +211,146 @@ def check_rate_limit(request: Request) -> None:
     global_hits.append(now)
 
 
+def today() -> str:
+    return date.today().isoformat()  # server clock is UTC
+
+
+def client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for")
+    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown")
+
+
+mem: dict[str, int] = {}
+
+
+def _up(cmds):
+    r = httpx.post(UP_URL + "/pipeline", headers={"Authorization": "Bearer " + UP_TOKEN}, json=cmds, timeout=5)
+    r.raise_for_status()
+    return [x.get("result") for x in r.json()]
+
+
+def incr(key: str, n: int = 1) -> int:
+    if UP_URL:
+        try:
+            return int(_up([["INCRBY", key, n], ["EXPIRE", key, 172800]])[0])
+        except Exception as e:
+            print("Upstash error:", e, flush=True)
+    if len(mem) > 3000:
+        for k in [k for k in mem if f":{today()}:" not in k]:
+            del mem[k]
+    mem[key] = max(0, mem.get(key, 0) + n)
+    return mem[key]
+
+
+def kv_get(key: str) -> int:
+    if UP_URL:
+        try:
+            return int(_up([["GET", key]])[0] or 0)
+        except Exception as e:
+            print("Upstash error:", e, flush=True)
+    return mem.get(key, 0)
+
+
+def record_call(provider: str, model: str, user: str) -> None:
+    incr(f"calls:{today()}:{provider}")
+    n = incr(f"model:{today()}:{model}")
+    uid = hashlib.sha256(user.encode()).hexdigest()[:8]
+    print(f"AI usage: user={uid} provider={provider} model={model} model_calls_today={n}", flush=True)
+
+
+def usage_load() -> float:
+    d = today()
+    cap = BUDGET["groq"] + (BUDGET["gemini"] if GEMINI_KEY else 0)
+    used = kv_get(f"calls:{d}:groq") + (kv_get(f"calls:{d}:gemini") if GEMINI_KEY else 0)
+    return min(1.0, used / cap) if cap else 1.0
+
+
+def daily_limit() -> int:
+    return max(LIMIT_MIN, round(LIMIT_MAX - (LIMIT_MAX - LIMIT_MIN) * usage_load()))
+
+
 def sse(obj) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
-def run_chat(msgs):
+def start_stream(msgs):
+    """Open a streaming completion. Waits out short rate limits, then tries fallback models."""
+    err = None
+    for model in [MODEL] + FALLBACK_MODELS:
+        for attempt in range(2):
+            try:
+                return groq_client.chat.completions.create(
+                    model=model, messages=msgs, max_tokens=MAX_TOKENS, stream=True, **tool_args()), model
+            except RateLimitError as e:
+                err = e
+                m = re.search(r"try again in ([\d.]+)s", str(e))
+                wait = float(m.group(1)) if m else 3.0
+                if attempt == 0 and wait <= 8:
+                    time.sleep(wait + 0.3)
+                    continue
+                break
+            except NotFoundError as e:
+                err = e
+                break
+    raise err
+
+
+def gemini_turn(msgs):
+    """Fallback: one non-streaming call through Gemini's OpenAI-compatible endpoint."""
+    r = httpx.post(
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        headers={"Authorization": f"Bearer {GEMINI_KEY}", "x-goog-api-key": GEMINI_KEY},
+        json={"model": GEMINI_MODEL, "messages": msgs, "max_tokens": MAX_TOKENS, **tool_args()},
+        timeout=60)
+    if r.status_code != 200:
+        print("Gemini fallback failed:", r.status_code, r.text[:300], flush=True)
+        r.raise_for_status()
+    m = r.json()["choices"][0]["message"]
+    calls = {i: {"id": tc.get("id") or f"call_{i}", "name": tc["function"]["name"],
+                 "args": tc["function"].get("arguments") or "{}"} for i, tc in enumerate(m.get("tool_calls") or [])}
+    return m.get("content") or "", calls
+
+
+def model_turn(msgs, user="?"):
+    """One model call. Streams tokens as events; returns (text, tool_calls)."""
+    try:
+        stream, used = start_stream(msgs)
+        record_call("groq", used, user)
+    except (RateLimitError, NotFoundError):
+        if not GEMINI_KEY:
+            raise
+        record_call("gemini", GEMINI_MODEL, user)
+        text, calls = gemini_turn(msgs)
+        if text:
+            yield sse({"t": "token", "v": text})
+        return text, calls
+    text, calls = "", {}
+    for ch in stream:
+        if not ch.choices:
+            continue
+        d = ch.choices[0].delta
+        if d.content:
+            text += d.content
+            yield sse({"t": "token", "v": d.content})
+        for tc in d.tool_calls or []:
+            c = calls.setdefault(tc.index, {"id": "", "name": "", "args": ""})
+            c["id"] = tc.id or c["id"]
+            if tc.function:
+                c["name"] += tc.function.name or ""
+                c["args"] += tc.function.arguments or ""
+    return text, calls
+
+
+def run_chat(msgs, refund=None, user="?"):
     sources, answered = [], False
     try:
         for rnd in range(MAX_TOOL_ROUNDS + 1):
-            stream = groq_client.chat.completions.create(
-                model=MODEL, messages=msgs, tools=TOOLS, max_tokens=MAX_TOKENS, stream=True,
-                tool_choice="auto" if rnd < MAX_TOOL_ROUNDS else "none")
-            calls = {}
-            for ch in stream:
-                if not ch.choices:
-                    continue
-                d = ch.choices[0].delta
-                if d.content:
-                    answered = True
-                    yield sse({"t": "token", "v": d.content})
-                for tc in d.tool_calls or []:
-                    c = calls.setdefault(tc.index, {"id": "", "name": "", "args": ""})
-                    c["id"] = tc.id or c["id"]
-                    if tc.function:
-                        c["name"] += tc.function.name or ""
-                        c["args"] += tc.function.arguments or ""
-            if not calls:
+            last = rnd == MAX_TOOL_ROUNDS
+            if last:
+                msgs.append({"role": "system", "content": "Tool limit reached. Answer now using what you have. Do not call tools."})
+            text, calls = yield from model_turn(msgs, user)
+            answered = answered or bool(text)
+            if not calls or last:
                 break
             msgs.append({"role": "assistant", "content": "", "tool_calls": [
                 {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["args"] or "{}"}}
@@ -230,7 +365,13 @@ def run_chat(msgs):
         if not answered:
             yield sse({"t": "token", "v": "I couldn't generate a reply. Please try again."})
         yield sse({"t": "sources", "v": sources})
+    except RateLimitError:
+        if refund:
+            refund()
+        yield sse({"t": "error", "v": "The free AI quota is busy right now. Wait about 30 seconds and try again."})
     except Exception as e:
+        if refund:
+            refund()
         yield sse({"t": "error", "v": f"Model request failed: {e}"})
     yield sse({"t": "done"})
 
@@ -249,13 +390,22 @@ def chat(body: ChatRequest, request: Request):
     if history[0]["role"] != "user":
         history = history[1:]
     msgs = [{"role": "system", "content": SYSTEM_PROMPT.format(today=date.today().isoformat())}] + history
-    return StreamingResponse(run_chat(msgs), media_type="text/event-stream",
+    refund = None
+    if LIMITS_ON:
+        key, limit = f"u:{today()}:{client_ip(request)}", daily_limit()
+        if kv_get(key) >= limit:
+            raise HTTPException(429, f"Daily limit reached ({limit} messages today). It resets at midnight UTC.")
+        incr(key)
+        refund = lambda: incr(key, -1)  # failed replies don't use up a message
+    return StreamingResponse(run_chat(msgs, refund, client_ip(request)), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/transcribe")
 async def transcribe(request: Request):
     check_rate_limit(request)
+    if "voice" in OFF:
+        raise HTTPException(404, "Voice input is turned off.")
     data = await request.body()
     if not data or len(data) > MAX_AUDIO:
         raise HTTPException(400, "Audio missing or larger than 5 MB.")
@@ -269,10 +419,22 @@ async def transcribe(request: Request):
     return {"text": res.text}
 
 
+@app.get("/api/config")
+def config():
+    return {"off": sorted(OFF), "access": bool(ACCESS_CODE)}
+
+
+@app.get("/api/usage")
+def usage(request: Request):
+    if not LIMITS_ON:
+        return {"enabled": False}
+    limit, used = daily_limit(), kv_get(f"u:{today()}:{client_ip(request)}")
+    return {"enabled": True, "limit": limit, "used": used, "remaining": max(0, limit - used)}
+
+
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
 @app.get("/")
 def index():
     return FileResponse(BASE_DIR / "static" / "index.html")
-
