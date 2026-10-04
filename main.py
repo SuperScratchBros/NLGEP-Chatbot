@@ -34,7 +34,7 @@ groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 MAX_HISTORY, MAX_TOOL_ROUNDS, MAX_TOKENS = 10, 3, 1500
-# Feature switches: DISABLED_FEATURES=voice,attach,listen,weather,gemini,mistral,openrouter,image,limits,... (comma list)
+# Feature switches: DISABLED_FEATURES=voice,attach,listen,weather,gemini,openrouter,image,limits,cloudchat,... (comma list)
 OFF = {f.strip().lower() for f in os.getenv("DISABLED_FEATURES", "").split(",") if f.strip()}
 LIMITS_ON = "limits" not in OFF
 LIMIT_MAX = int(os.getenv("DAILY_LIMIT_MAX", "15"))   # messages/user/day when AI quota is fresh
@@ -305,7 +305,7 @@ def record_call(provider: str, model: str, user: str) -> None:
 
 def usage_load() -> float:
     d = today()
-    names = ["groq"] + [p[0] for p in COMPAT]
+    names = ["groq"] + [p[0] for p in COMPAT] + (["huggingface"] if HF_TOKEN else [])
     cap = sum(BUDGET.get(n, 0) for n in names)
     used = sum(kv_get(f"calls:{d}:{n}") for n in names)
     return min(1.0, used / cap) if cap else 1.0
