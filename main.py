@@ -26,22 +26,33 @@ groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 MAX_HISTORY, MAX_TOOL_ROUNDS, MAX_TOKENS = 10, 3, 1500
-# Feature switches: DISABLED_FEATURES=voice,attach,listen,weather,gemini,limits,... (comma list)
+# Feature switches: DISABLED_FEATURES=voice,attach,listen,weather,gemini,mistral,openrouter,image,limits,... (comma list)
 OFF = {f.strip().lower() for f in os.getenv("DISABLED_FEATURES", "").split(",") if f.strip()}
 LIMITS_ON = "limits" not in OFF
 LIMIT_MAX = int(os.getenv("DAILY_LIMIT_MAX", "15"))   # messages/user/day when AI quota is fresh
 LIMIT_MIN = int(os.getenv("DAILY_LIMIT_MIN", "5"))    # messages/user/day when AI quota is nearly used up
-BUDGET = {"groq": int(os.getenv("DAILY_BUDGET_GROQ", "300")), "gemini": int(os.getenv("DAILY_BUDGET_GEMINI", "200")),
-          "openrouter": int(os.getenv("DAILY_BUDGET_OPENROUTER", "40"))}
+BUDGET = {
+    "groq": int(os.getenv("DAILY_BUDGET_GROQ", "300")),
+    "gemini": int(os.getenv("DAILY_BUDGET_GEMINI", "200")),
+    "openrouter": int(os.getenv("DAILY_BUDGET_OPENROUTER", "40")),
+    "mistral": int(os.getenv("DAILY_BUDGET_MISTRAL", "200")),
+}
 UP_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")   # optional: makes counters survive restarts
 UP_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
 GEMINI_KEY = "" if "gemini" in OFF else os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+MISTRAL_KEY = "" if "mistral" in OFF else os.getenv("MISTRAL_API_KEY", "").strip()
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-latest").strip()
+MISTRAL_IMAGE_MODEL = os.getenv("MISTRAL_IMAGE_MODEL", "mistral-medium-latest").strip()
+MISTRAL_IMAGE_AGENT_ID = os.getenv("MISTRAL_IMAGE_AGENT_ID", "").strip()
 ACCESS_CODE = os.getenv("ACCESS_CODE", "").strip()
 OR_KEY = "" if "openrouter" in OFF else os.getenv("OPENROUTER_API_KEY", "").strip()
 OR_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free").strip()  # free router picks a free model that supports tools
 # Fallback providers that speak the OpenAI chat format: (name, url, key, model, extra headers, label)
 COMPAT = []
+if MISTRAL_KEY:
+    COMPAT.append(("mistral", "https://api.mistral.ai/v1/chat/completions",
+                   MISTRAL_KEY, MISTRAL_MODEL, {}, "Mistral"))
 if GEMINI_KEY:
     COMPAT.append(("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
                    GEMINI_KEY, GEMINI_MODEL, {"x-goog-api-key": GEMINI_KEY}, "Google"))
@@ -204,6 +215,10 @@ class ChatRequest(BaseModel):
     model: str = "auto"
 
 
+class ImageRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
+
+
 def check_rate_limit(request: Request) -> None:
     if ACCESS_CODE and not hmac.compare_digest(request.headers.get("x-access-code", ""), ACCESS_CODE):
         raise HTTPException(401, "Access code required.")
@@ -292,7 +307,7 @@ def model_choices():
 def scrub(text) -> str:
     """Hide any secret that ends up inside an error message."""
     text = str(text)
-    for v in (os.getenv("GROQ_API_KEY", ""), os.getenv("TAVILY_API_KEY", ""), GEMINI_KEY, OR_KEY, UP_TOKEN, ACCESS_CODE):
+    for v in (os.getenv("GROQ_API_KEY", ""), os.getenv("TAVILY_API_KEY", ""), GEMINI_KEY, MISTRAL_KEY, OR_KEY, UP_TOKEN, ACCESS_CODE):
         v = v.strip()
         if len(v) > 4:
             text = text.replace(v, "***")
@@ -386,6 +401,90 @@ def model_turn(msgs, user="?", choice="auto"):
     return text, calls
 
 
+def mistral_image_agent() -> str:
+    """Create/cache a Mistral agent that has access to the image-generation tool."""
+    global MISTRAL_IMAGE_AGENT_ID
+    if not MISTRAL_KEY:
+        raise RuntimeError("Mistral is not configured.")
+    if MISTRAL_IMAGE_AGENT_ID:
+        return MISTRAL_IMAGE_AGENT_ID
+    r = httpx.post(
+        "https://api.mistral.ai/v1/agents",
+        headers={"Authorization": f"Bearer {MISTRAL_KEY}", "Content-Type": "application/json"},
+        timeout=60,
+        json={
+            "model": MISTRAL_IMAGE_MODEL,
+            "name": "NLGEP Chatbot Image Generator",
+            "description": "Image generation agent for the NLGEP Chatbot.",
+            "instructions": "Generate an image when the user asks for one. Use the image_generation tool.",
+            "tools": [{"type": "image_generation"}],
+        },
+    )
+    if r.status_code != 200:
+        print("Mistral image agent failed:", r.status_code, scrub(r.text[:300]), flush=True)
+        r.raise_for_status()
+    MISTRAL_IMAGE_AGENT_ID = r.json()["id"]
+    return MISTRAL_IMAGE_AGENT_ID
+
+
+def _find_tool_file(value):
+    if isinstance(value, dict):
+        if value.get("type") == "tool_file" and value.get("file_id"):
+            return value
+        for child in value.values():
+            found = _find_tool_file(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_tool_file(child)
+            if found:
+                return found
+    return None
+
+
+def generate_mistral_image(prompt: str, user: str) -> dict:
+    """Generate one image through Mistral's image_generation agent tool."""
+    agent_id = mistral_image_agent()
+    r = httpx.post(
+        "https://api.mistral.ai/v1/conversations",
+        headers={"Authorization": f"Bearer {MISTRAL_KEY}", "Content-Type": "application/json"},
+        timeout=120,
+        json={"agent_id": agent_id, "inputs": prompt},
+    )
+    if r.status_code != 200:
+        print("Mistral image generation failed:", r.status_code, scrub(r.text[:300]), flush=True)
+        r.raise_for_status()
+    data = r.json()
+    chunk = _find_tool_file(data.get("outputs", []))
+    if not chunk:
+        raise RuntimeError("Mistral returned no generated image file.")
+    file_id = chunk["file_id"]
+    u = httpx.get(
+        f"https://api.mistral.ai/v1/files/{file_id}/url",
+        headers={"Authorization": f"Bearer {MISTRAL_KEY}"},
+        params={"expiry": 24},
+        timeout=30,
+    )
+    if u.status_code != 200:
+        print("Mistral image URL failed:", u.status_code, scrub(u.text[:300]), flush=True)
+        u.raise_for_status()
+    signed = u.json().get("url")
+    if not signed:
+        raise RuntimeError("Mistral did not return a download URL for the generated image.")
+    text_parts = []
+    for output in data.get("outputs", []):
+        content = output.get("content") if isinstance(output, dict) else None
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+                    text_parts.append(item["text"])
+        elif isinstance(content, str) and content:
+            text_parts.append(content)
+    record_call("mistral", MISTRAL_IMAGE_MODEL, user)
+    return {"url": signed, "file_id": file_id, "text": "\n".join(text_parts).strip()}
+
+
 def run_chat(msgs, refund=None, user="?", choice="auto"):
     sources, answered = [], False
     try:
@@ -448,6 +547,30 @@ def chat(body: ChatRequest, request: Request):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.post("/api/generate-image")
+def generate_image(body: ImageRequest, request: Request):
+    check_rate_limit(request)
+    if "image" in OFF:
+        raise HTTPException(404, "Image generation is turned off.")
+    if not MISTRAL_KEY:
+        raise HTTPException(503, "Mistral is not configured. Add MISTRAL_API_KEY in Render.")
+    key = f"u:{today()}:{client_ip(request)}"
+    refund = None
+    if LIMITS_ON:
+        limit = daily_limit()
+        if kv_get(key) >= limit:
+            raise HTTPException(429, f"Daily limit reached ({limit} messages today). It resets at midnight UTC.")
+        incr(key)
+        refund = lambda: incr(key, -1)
+    try:
+        result = generate_mistral_image(body.prompt.strip(), client_ip(request))
+        return result
+    except Exception as e:
+        if refund:
+            refund()
+        raise HTTPException(502, f"Image generation failed: {scrub(e)}")
+
+
 @app.post("/api/transcribe")
 async def transcribe(request: Request):
     check_rate_limit(request)
@@ -473,7 +596,12 @@ def models():
 
 @app.get("/api/config")
 def config():
-    return {"off": sorted(OFF), "access": bool(ACCESS_CODE)}
+    return {
+        "off": sorted(OFF),
+        "access": bool(ACCESS_CODE),
+        "mistral": bool(MISTRAL_KEY),
+        "image": bool(MISTRAL_KEY) and "image" not in OFF,
+    }
 
 
 @app.get("/api/usage")
