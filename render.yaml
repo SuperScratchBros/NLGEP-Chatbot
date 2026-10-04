@@ -11,5 +11,11 @@ services:
         sync: false
       - key: TAVILY_API_KEY
         sync: false
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: MISTRAL_MODEL
+        value: mistral-large-latest
+      - key: MISTRAL_IMAGE_MODEL
+        value: mistral-medium-latest
       - key: PYTHON_VERSION
         value: 3.12.3
