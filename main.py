@@ -1,7 +1,8 @@
-import ast, hashlib, json, math, operator, os, re, time
+import ast, hashlib, ipaddress, json, math, operator, os, re, socket, time
 from collections import defaultdict, deque
 from datetime import date, datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from dotenv import load_dotenv
@@ -18,6 +19,7 @@ BASE_DIR = Path(__file__).parent
 MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 FALLBACK_MODELS = [m.strip() for m in os.getenv("GROQ_FALLBACK_MODELS", "").split(",") if m.strip()]
 STT_MODEL = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
+
 
 def env_secret(name: str) -> str:
     value = os.getenv(name, "").strip()
@@ -46,6 +48,7 @@ BUDGET = {
 UP_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")   # optional: makes counters survive restarts
 UP_TOKEN = env_secret("UPSTASH_REDIS_REST_TOKEN")
 UPSTASH_DISABLED = False
+TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").strip().lower() == "true"
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_SECRET_KEY = env_secret("SUPABASE_SECRET_KEY") or env_secret("SUPABASE_SERVICE_ROLE_KEY")
 GEMINI_KEY = "" if "gemini" in OFF else env_secret("GEMINI_API_KEY")
@@ -98,7 +101,7 @@ def tool_args():
 OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
        ast.Pow: operator.pow, ast.Mod: operator.mod, ast.USub: operator.neg, ast.UAdd: operator.pos}
 FUNCS = {n: getattr(math, n) for n in ("sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "log", "log10",
-                                       "exp", "floor", "ceil", "factorial", "radians", "degrees")}
+                                        "exp", "floor", "ceil", "factorial", "radians", "degrees")}
 FUNCS.update(abs=abs, round=round)
 CONST = {"pi": math.pi, "e": math.e}
 
@@ -139,6 +142,36 @@ def add_source(sources, title, url):
         sources.append({"title": title or url, "url": url})
 
 
+def blocked_url(hostname: str) -> bool:
+    host = hostname.strip().lower().strip("[]")
+    if not host or host in {"localhost", "localhost.localdomain"} or host.endswith(".localhost"):
+        return True
+    if host.endswith(".internal") or host in {"metadata.google.internal", "metadata.google.internal."}:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return (
+            ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or
+            ip.is_reserved or ip.is_unspecified or ip.is_site_local
+        )
+    except ValueError:
+        pass
+    try:
+        for family, _, _, _, sockaddr in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
+            try:
+                ip = ipaddress.ip_address(sockaddr[0])
+            except ValueError:
+                continue
+            if (
+                ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or
+                ip.is_reserved or ip.is_unspecified or ip.is_site_local
+            ):
+                return True
+    except OSError:
+        return True
+    return False
+
+
 def web_search(query, sources):
     res = tavily_client.search(query=query, max_results=3, search_depth="basic")
     out = []
@@ -151,6 +184,11 @@ def web_search(query, sources):
 def read_page(url, sources):
     if not url.startswith(("http://", "https://")):
         return "Invalid URL."
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        return "Invalid URL."
+    if blocked_url(parsed.hostname):
+        return "URL blocked: private or local addresses are not allowed."
     res = tavily_client.extract(urls=[url])
     items = res.get("results", [])
     if not items:
@@ -216,10 +254,21 @@ class ChatRequest(BaseModel):
     model: str = "auto"
 
 
+def client_ip(request: Request) -> str:
+    if not TRUST_PROXY_HEADERS:
+        return request.client.host if request.client else "unknown"
+    for header in ("x-forwarded-for", "x-real-ip", "cf-connecting-ip"):
+        value = request.headers.get(header, "").strip()
+        if not value:
+            continue
+        parts = [p.strip() for p in value.split(",") if p.strip()]
+        if parts:
+            return parts[0]
+    return request.client.host if request.client else "unknown"
+
 
 def check_rate_limit(request: Request) -> None:
-    fwd = request.headers.get("x-forwarded-for")
-    ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown")
+    ip = client_ip(request)
     now = time.time()
     while global_hits and now - global_hits[0] > 60:
         global_hits.popleft()
@@ -236,11 +285,6 @@ def check_rate_limit(request: Request) -> None:
 
 def today() -> str:
     return date.today().isoformat()  # server clock is UTC
-
-
-def client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for")
-    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown")
 
 
 def utc_now() -> str:
@@ -580,6 +624,7 @@ def create_chat_session(body: UsernameRequest, request: Request, response: Respo
         raise HTTPException(400, "Username cannot be empty.")
     # A random session ID is the browser's login token. No password is stored.
     session_id = os.urandom(24).hex()
+    user = None
     try:
         existing = supabase_rows("chat_users", {
             "select": "user_id,username",
@@ -598,12 +643,22 @@ def create_chat_session(body: UsernameRequest, request: Request, response: Respo
                                "expires_at": expires_at, "last_seen": now},
                       prefer="return=minimal")
     except HTTPException as e:
+        if user is not None:
+            try:
+                supabase_rows("chat_users", {"user_id": f"eq.{user['user_id']}"}, method="DELETE")
+            except Exception:
+                pass
         if e.status_code == 502 and "duplicate key" in str(e.detail).lower():
             raise HTTPException(409, "That username is already taken. Choose another one.")
         raise
     except Exception as e:
+        if user is not None:
+            try:
+                supabase_rows("chat_users", {"user_id": f"eq.{user['user_id']}"}, method="DELETE")
+            except Exception:
+                pass
         raise HTTPException(502, f"Could not create chat session: {scrub(e)}")
-    response.set_cookie(SESSION_COOKIE, session_id, max_age=SESSION_MAX_AGE, httponly=True, samesite="lax", secure=request.url.scheme == "https" )
+    response.set_cookie(SESSION_COOKIE, session_id, max_age=SESSION_MAX_AGE, httponly=True, samesite="lax", secure=request.url.scheme == "https")
     return {"username": user["username"]}
 
 
@@ -717,3 +772,4 @@ def ai():
 @app.get("/chat")
 def chatting():
     return FileResponse(BASE_DIR / "static" / "chatting.html")
+
