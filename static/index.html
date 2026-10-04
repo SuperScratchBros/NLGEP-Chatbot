@@ -7,22 +7,22 @@
 <style>
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
-body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#050806;color:#eaffef;overflow:hidden}
-body:before{content:"";position:fixed;inset:0;background:radial-gradient(circle at 50% 20%,rgba(0,255,120,.12),transparent 38%),linear-gradient(180deg,#020403,#071109 70%,#020403);pointer-events:none}
-main{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px;position:relative}
-.logo{font-size:clamp(48px,9vw,108px);font-weight:800;letter-spacing:.08em;text-align:center;text-shadow:0 0 12px rgba(100,255,160,.65),0 0 42px rgba(0,255,100,.3);margin:0}
-.sub{margin:12px 0 42px;color:#9db9a4;letter-spacing:.18em;text-transform:uppercase;font-size:14px;text-align:center}
-.buttons{display:flex;gap:22px;flex-wrap:wrap;justify-content:center}
-button{min-width:190px;padding:18px 30px;border:1px solid rgba(120,255,160,.45);border-radius:18px;background:rgba(12,27,16,.72);color:#eaffef;font-size:18px;font-weight:700;cursor:pointer;box-shadow:0 8px 30px rgba(0,0,0,.35),inset 0 0 25px rgba(0,255,110,.05);backdrop-filter:blur(12px);transition:.2s transform,.2s border-color,.2s box-shadow}
-button:hover{transform:translateY(-4px);border-color:#82ffae;box-shadow:0 12px 36px rgba(0,0,0,.4),0 0 30px rgba(0,255,100,.15)}
-.card{padding:18px 26px;border:1px solid rgba(120,255,160,.18);border-radius:16px;background:rgba(8,17,11,.58);color:#78927f;font-size:13px;max-width:560px;text-align:center;line-height:1.6}
-.footer{position:absolute;bottom:22px;color:#48624f;font-size:12px}
+body{font-family:Arial,sans-serif;background:#fff;color:#000;overflow:hidden}
+main{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px;text-align:center}
+.logo{font-size:clamp(56px,10vw,110px);font-weight:700;margin:0 0 10px}
+.title{font-size:clamp(34px,6vw,64px);font-weight:700;margin:0}
+.sub{margin:8px 0 34px;font-size:18px}
+.buttons{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}
+button{min-width:190px;padding:14px 24px;background:#fff;color:#000;border:1px solid #000;border-radius:2px;font:700 18px Arial,sans-serif;cursor:pointer}
+button:hover{background:#f2f2f2}
+.card{margin-top:22px;padding:14px 18px;border:1px solid #000;background:#fff;max-width:560px;font-size:14px;line-height:1.5}
+.footer{position:absolute;bottom:18px;font-size:12px}
 </style>
 </head>
 <body>
 <main>
   <h1 class="logo">∞</h1>
-  <div style="font-size:clamp(34px,6vw,70px);font-weight:800;text-align:center;letter-spacing:.05em">Infinity Network</div>
+  <div class="title">Infinity Network</div>
   <div class="sub">InfiNet</div>
   <div class="buttons">
     <button onclick="location.href='/ai'">NLGEP AI</button>
