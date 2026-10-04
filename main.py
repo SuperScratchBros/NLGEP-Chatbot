@@ -50,7 +50,6 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_SECRET_KEY = env_secret("SUPABASE_SECRET_KEY") or env_secret("SUPABASE_SERVICE_ROLE_KEY")
 GEMINI_KEY = "" if "gemini" in OFF else env_secret("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-CLOUD_CHAT_ON = "cloudchat" not in OFF and bool(SUPABASE_URL and SUPABASE_SECRET_KEY)
 ACCESS_CODE = os.getenv("ACCESS_CODE", "").strip()
 OR_KEY = "" if "openrouter" in OFF else env_secret("OPENROUTER_API_KEY")
 OR_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free").strip()  # free router picks a free model that supports tools
@@ -602,13 +601,11 @@ def delete_chat_session(request: Request, response):
 
 @app.get("/api/chat-me")
 def chat_me(request: Request):
-    check_rate_limit(request)
     return {"user": session_user(request)}
 
 
 @app.get("/api/chat-users")
 def chat_users(request: Request):
-    check_rate_limit(request)
     me = session_user(request)
     if not me:
         raise HTTPException(401, "Choose a username first.")
@@ -632,7 +629,6 @@ def chat_users(request: Request):
 
 @app.get("/api/chat-messages")
 def chat_messages(request: Request, after: str = ""):
-    check_rate_limit(request)
     me = session_user(request)
     if not me:
         raise HTTPException(401, "Choose a username first.")
