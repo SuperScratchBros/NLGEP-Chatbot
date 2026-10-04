@@ -585,7 +585,7 @@ def create_chat_session(body: UsernameRequest, request: Request, response: Respo
         raise
     except Exception as e:
         raise HTTPException(502, f"Could not create chat session: {scrub(e)}")
-    response.set_cookie(SESSION_COOKIE, session_id, max_age=SESSION_MAX_AGE, httponly=True, samesite="lax", secure=True)
+    response.set_cookie(SESSION_COOKIE, session_id, max_age=SESSION_MAX_AGE, httponly=True, samesite="lax", secure=request.url.scheme == "https" )
     return {"username": user["username"]}
 
 
@@ -637,11 +637,11 @@ def chat_messages(request: Request, after: str = ""):
         raise HTTPException(401, "Choose a username first.")
     params = {
         "select": "message_id,user_id,username,content,created_at",
-        "order": "created_at.asc",
+        "order": "message_id.asc",
         "limit": "100",
     }
-    if after and re.fullmatch(r"\d{4}-\d{2}-\d{2}T[0-9:.+\-Z]+", after):
-        params["created_at"] = f"gt.{after}"
+    if after and after.isdigit():
+        params["message_id"] = f"gt.{after}"
     rows = supabase_rows("chat_messages", params)
     return {"messages": rows, "me": me["username"]}
 
