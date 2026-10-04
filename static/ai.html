@@ -247,10 +247,10 @@ const left = document.getElementById("left");
 function refreshLeft() {
   fetch("/api/usage").then(r => r.json()).then(u => { left.textContent = u.enabled ? " \u00b7 " + u.remaining + "/" + u.limit + " left today" : ""; }).catch(() => {});
 }
-fetch("/api/config").then(r => r.json()).then(c => {
-  document.body.dataset.off = c.off.join(" ");
-  if (!c.image) imageBtn.style.display = "none";
-}).catch(() => { imageBtn.style.display = "none"; });
+fetch("/api/config").then(r => {
+  if (!r.ok) throw new Error("config failed");
+  return r.json();
+}).then(c => { document.body.dataset.off = c.off.join(" "); }).catch(() => {});
 
 refreshLeft();
 const modelSel = document.getElementById("model");
