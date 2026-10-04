@@ -44,11 +44,13 @@ form button:disabled{opacity:.5;cursor:default}
 .aux{background:none;border:1px solid var(--line);color:var(--muted);border-radius:10px;padding:0 12px;font:inherit;cursor:pointer;max-width:9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .aux.on{background:#b3261e;border-color:#b3261e;color:#fff}
 textarea{min-width:0}
+.bar{margin-top:6px;display:flex;gap:6px}.bar button{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:1px 8px;font:inherit;font-size:12px;cursor:pointer}
+[data-off~="voice"] #mic,[data-off~="attach"] #attach,[data-off~="listen"] .listen{display:none}
 </style>
 </head>
 <body>
 <main>
-  <header><h1>Chat</h1><button id="clear" type="button">New chat</button></header>
+  <header><h1>Chat <small id="left" style="font-weight:400;color:var(--muted);font-size:13px"></small></h1><div style="display:flex;gap:8px"><button id="export" type="button">Export</button><button id="clear" type="button">New chat</button></div></header>
   <div id="log" aria-live="polite"></div>
   <form id="form">
     <textarea id="input" rows="1" placeholder="Ask anything" aria-label="Message"></textarea>
@@ -103,6 +105,13 @@ function add(role, text, sources) {
     const html = renderMarkdown(text);
     if (html === null) { body.style.whiteSpace = "pre-wrap"; body.textContent = text; } else body.innerHTML = html;
     d.appendChild(body);
+    if (text) {
+      const bar = document.createElement("div"); bar.className = "bar";
+      const mk = (label, fn) => { const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.className = label.toLowerCase(); b.onclick = () => fn(b); bar.appendChild(b); };
+      mk("Copy", b => { navigator.clipboard.writeText(text); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1200); });
+      mk("Listen", () => { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(body.innerText)); });
+      d.appendChild(bar);
+    }
   }
   if (sources && sources.length) {
     const s = document.createElement("div"); s.className = "sources";
@@ -122,7 +131,7 @@ function render() {
   messages.forEach(m => add(m.role, m.display || m.content, m.sources));
 }
 
-let attached = null;
+let attached = null, ctl = null;
 const attachBtn = document.getElementById("attach"), fileIn = document.getElementById("file"), mic = document.getElementById("mic");
 
 function flash(msg) {
@@ -154,7 +163,7 @@ mic.onclick = async () => {
       stream.getTracks().forEach(t => t.stop()); mic.textContent = "Mic"; mic.classList.remove("on");
       const type = (rec.mimeType || "audio/webm").split(";")[0];
       try {
-        const r = await fetch("/api/transcribe", { method: "POST", headers: { "Content-Type": type }, body: new Blob(chunks, { type }) });
+        const r = await fetch("/api/transcribe", { method: "POST", headers: { "Content-Type": type, "X-Access-Code": localStorage.getItem("code") || "" }, body: new Blob(chunks, { type }) });
         const d = await r.json();
         if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : "Transcription failed");
         input.value = (input.value + " " + d.text).trim(); input.dispatchEvent(new Event("input")); input.focus();
@@ -167,12 +176,13 @@ mic.onclick = async () => {
 form.addEventListener("submit", async e => {
   e.preventDefault();
   const typed = input.value.trim();
-  if ((!typed && !attached) || send.disabled) return;
+  if (ctl) { ctl.abort(); return; }
+  if (!typed && !attached) return;
   const shown = (attached ? "Attached: " + attached.name + "\n" : "") + typed;
   const full = attached ? 'Attached file "' + attached.name + '":\n```\n' + attached.text + "\n```\n\n" + typed : typed;
   if (!messages.length) log.innerHTML = "";
   messages.push({ role: "user", content: full, display: shown });
-  const bubble = add("user", shown); input.value = ""; input.style.height = "auto"; send.disabled = true;
+  const bubble = add("user", shown); input.value = ""; input.style.height = "auto"; ctl = new AbortController(); send.textContent = "Stop";
   const keep = attached; attached = null; attachBtn.textContent = "Attach"; attachBtn.classList.remove("on"); fileIn.value = "";
 
   const status = document.createElement("div"); status.className = "status"; status.textContent = "Thinking...";
@@ -183,9 +193,10 @@ form.addEventListener("submit", async e => {
 
   try {
     const res = await fetch("/api/chat", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", signal: ctl.signal, headers: { "Content-Type": "application/json", "X-Access-Code": localStorage.getItem("code") || "" },
       body: JSON.stringify({ messages: messages.map(({ role, content }) => ({ role, content })) })
     });
+    if (res.status === 401) { localStorage.setItem("code", prompt("Enter the access code:") || ""); throw new Error("Access code needed. Enter it, then send again."); }
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(typeof d.detail === "string" ? d.detail : "Request failed"); }
     const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
     for (;;) {
@@ -210,17 +221,33 @@ form.addEventListener("submit", async e => {
     messages.push({ role: "assistant", content: text, sources }); add("assistant", text, sources); save();
   } catch (err) {
     if (live) live.remove();
+    if (err.name === "AbortError") {
+      status.remove();
+      if (text) { messages.push({ role: "assistant", content: text + "\n\n*(stopped)*", sources }); add("assistant", text + "\n\n*(stopped)*", sources); save(); }
+      else { messages.pop(); bubble.remove(); input.value = typed; }
+      return;
+    }
     messages.pop(); bubble.remove(); input.value = typed;
     if (keep) { attached = keep; attachBtn.textContent = keep.name; attachBtn.classList.add("on"); }
     status.textContent = "Error: " + err.message + " Your message is back in the box. Send it again.";
-  } finally { clearTimeout(wake); send.disabled = false; input.focus(); }
+  } finally { clearTimeout(wake); ctl = null; send.textContent = "Send"; input.focus(); refreshLeft(); }
 });
 
 input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
 input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = input.scrollHeight + "px"; });
+document.getElementById("export").onclick = () => {
+  if (!messages.length) { flash("Nothing to export yet."); return; }
+  const md = messages.map(m => (m.role === "user" ? "**You:** " : "**Assistant:** ") + (m.display || m.content)).join("\n\n---\n\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([md], { type: "text/markdown" })); a.download = "chat.md"; a.click(); URL.revokeObjectURL(a.href);
+};
 document.getElementById("clear").onclick = () => { messages = []; save(); render(); };
+const left = document.getElementById("left");
+function refreshLeft() {
+  fetch("/api/usage").then(r => r.json()).then(u => { left.textContent = u.enabled ? " \u00b7 " + u.remaining + "/" + u.limit + " left today" : ""; }).catch(() => {});
+}
+fetch("/api/config").then(r => r.json()).then(c => { document.body.dataset.off = c.off.join(" "); }).catch(() => {});
+refreshLeft();
 render();
 </script>
 </body>
 </html>
-
