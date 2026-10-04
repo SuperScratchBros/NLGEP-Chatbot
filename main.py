@@ -32,11 +32,11 @@ LIMITS_ON = "limits" not in OFF
 LIMIT_MAX = int(os.getenv("DAILY_LIMIT_MAX", "15"))   # messages/user/day when AI quota is fresh
 LIMIT_MIN = int(os.getenv("DAILY_LIMIT_MIN", "5"))    # messages/user/day when AI quota is nearly used up
 BUDGET = {"groq": int(os.getenv("DAILY_BUDGET_GROQ", "300")), "gemini": int(os.getenv("DAILY_BUDGET_GEMINI", "200"))}
-UP_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").rstrip("/")   # optional: makes counters survive restarts
-UP_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
-GEMINI_KEY = "" if "gemini" in OFF else os.getenv("GEMINI_API_KEY", "")
+UP_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")   # optional: makes counters survive restarts
+UP_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+GEMINI_KEY = "" if "gemini" in OFF else os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-ACCESS_CODE = os.getenv("ACCESS_CODE", "")  # optional: set to require a password
+ACCESS_CODE = os.getenv("ACCESS_CODE", "").strip()  # optional: set to require a password
 RATE_LIMIT_IP, RATE_LIMIT_GLOBAL, MAX_AUDIO = 20, 120, 5_000_000
 UA = {"User-Agent": "nlgep-chatbot/1.0"}
 
@@ -277,6 +277,16 @@ def model_choices():
     return out
 
 
+def scrub(text) -> str:
+    """Hide any secret that ends up inside an error message."""
+    text = str(text)
+    for v in (os.getenv("GROQ_API_KEY", ""), os.getenv("TAVILY_API_KEY", ""), GEMINI_KEY, UP_TOKEN, ACCESS_CODE):
+        v = v.strip()
+        if len(v) > 4:
+            text = text.replace(v, "***")
+    return text
+
+
 def sse(obj) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
@@ -374,7 +384,7 @@ def run_chat(msgs, refund=None, user="?", choice="auto"):
                 try:
                     result = HANDLERS[c["name"]](json.loads(c["args"] or "{}"), sources)
                 except Exception as e:
-                    result = f"Tool failed: {e}"
+                    result = f"Tool failed: {scrub(e)}"
                 msgs.append({"role": "tool", "tool_call_id": c["id"], "content": str(result)})
         if not answered:
             yield sse({"t": "token", "v": "I couldn't generate a reply. Please try again."})
@@ -386,7 +396,7 @@ def run_chat(msgs, refund=None, user="?", choice="auto"):
     except Exception as e:
         if refund:
             refund()
-        yield sse({"t": "error", "v": f"Model request failed: {e}"})
+        yield sse({"t": "error", "v": f"Model request failed: {scrub(e)}"})
     yield sse({"t": "done"})
 
 
@@ -431,7 +441,7 @@ async def transcribe(request: Request):
         res = await run_in_threadpool(lambda: groq_client.audio.transcriptions.create(
             file=(f"audio.{ext}", data), model=STT_MODEL))
     except Exception as e:
-        raise HTTPException(502, f"Transcription failed: {e}")
+        raise HTTPException(502, f"Transcription failed: {scrub(e)}")
     return {"text": res.text}
 
 
