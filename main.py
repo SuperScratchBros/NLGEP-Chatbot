@@ -529,7 +529,7 @@ def session_user(request: Request):
     r = httpx.get(
         f"{SUPABASE_URL}/rest/v1/chat_sessions",
         headers=supabase_headers(),
-        params={"select": "session_id,user_id,username", "session_id": f"eq.{session_id}",
+        params={"select": "session_id,user_id,username,last_seen", "session_id": f"eq.{session_id}",
                 "expires_at": f"gt.{utc_now()}", "limit": "1"},
         timeout=10,
     )
@@ -537,12 +537,23 @@ def session_user(request: Request):
         raise HTTPException(502, f"Session lookup failed: {scrub(r.text[:300])}")
     rows = r.json()
     if rows:
+        # Polling can hit this endpoint every few seconds. Only write presence
+        # periodically so chat polling does not create unnecessary DB writes.
+        should_touch = True
         try:
-            supabase_rows("chat_sessions", {"session_id": f"eq.{session_id}"}, method="PATCH",
-                          payload={"last_seen": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
-                          prefer="return=minimal")
-        except HTTPException:
-            pass
+            last_seen = rows[0].get("last_seen", "")
+            if last_seen:
+                last_seen_dt = __import__("datetime").datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+                should_touch = (__import__("datetime").datetime.now(__import__("datetime").timezone.utc) - last_seen_dt).total_seconds() >= 15
+        except Exception:
+            should_touch = True
+        if should_touch:
+            try:
+                supabase_rows("chat_sessions", {"session_id": f"eq.{session_id}"}, method="PATCH",
+                              payload={"last_seen": utc_now()},
+                              prefer="return=minimal")
+            except HTTPException:
+                pass
     return rows[0] if rows else None
 
 
@@ -598,7 +609,6 @@ def create_chat_session(body: UsernameRequest, request: Request, response: Respo
 
 @app.delete("/api/chat-session")
 def delete_chat_session(request: Request, response):
-    check_rate_limit(request)
     session_id = request.cookies.get(SESSION_COOKIE, "")
     response.delete_cookie(SESSION_COOKIE)
     if session_id and supabase_configured():
