@@ -31,12 +31,23 @@ OFF = {f.strip().lower() for f in os.getenv("DISABLED_FEATURES", "").split(",") 
 LIMITS_ON = "limits" not in OFF
 LIMIT_MAX = int(os.getenv("DAILY_LIMIT_MAX", "15"))   # messages/user/day when AI quota is fresh
 LIMIT_MIN = int(os.getenv("DAILY_LIMIT_MIN", "5"))    # messages/user/day when AI quota is nearly used up
-BUDGET = {"groq": int(os.getenv("DAILY_BUDGET_GROQ", "300")), "gemini": int(os.getenv("DAILY_BUDGET_GEMINI", "200"))}
+BUDGET = {"groq": int(os.getenv("DAILY_BUDGET_GROQ", "300")), "gemini": int(os.getenv("DAILY_BUDGET_GEMINI", "200")),
+          "openrouter": int(os.getenv("DAILY_BUDGET_OPENROUTER", "40"))}
 UP_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")   # optional: makes counters survive restarts
 UP_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
 GEMINI_KEY = "" if "gemini" in OFF else os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-ACCESS_CODE = os.getenv("ACCESS_CODE", "").strip()  # optional: set to require a password
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+ACCESS_CODE = os.getenv("ACCESS_CODE", "").strip()
+OR_KEY = "" if "openrouter" in OFF else os.getenv("OPENROUTER_API_KEY", "").strip()
+OR_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free").strip()  # free router picks a free model that supports tools
+# Fallback providers that speak the OpenAI chat format: (name, url, key, model, extra headers, label)
+COMPAT = []
+if GEMINI_KEY:
+    COMPAT.append(("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                   GEMINI_KEY, GEMINI_MODEL, {"x-goog-api-key": GEMINI_KEY}, "Google"))
+if OR_KEY:
+    COMPAT.append(("openrouter", "https://openrouter.ai/api/v1/chat/completions",
+                   OR_KEY, OR_MODEL, {"X-Title": "NLGEP Chatbot"}, "OpenRouter"))  # optional: set to require a password
 RATE_LIMIT_IP, RATE_LIMIT_GLOBAL, MAX_AUDIO = 20, 120, 5_000_000
 UA = {"User-Agent": "nlgep-chatbot/1.0"}
 
@@ -261,8 +272,9 @@ def record_call(provider: str, model: str, user: str) -> None:
 
 def usage_load() -> float:
     d = today()
-    cap = BUDGET["groq"] + (BUDGET["gemini"] if GEMINI_KEY else 0)
-    used = kv_get(f"calls:{d}:groq") + (kv_get(f"calls:{d}:gemini") if GEMINI_KEY else 0)
+    names = ["groq"] + [p[0] for p in COMPAT]
+    cap = sum(BUDGET.get(n, 0) for n in names)
+    used = sum(kv_get(f"calls:{d}:{n}") for n in names)
     return min(1.0, used / cap) if cap else 1.0
 
 
@@ -272,15 +284,15 @@ def daily_limit() -> int:
 
 def model_choices():
     out = [{"id": "groq:" + m, "label": m.split("/")[-1] + " (Groq)"} for m in [MODEL] + FALLBACK_MODELS]
-    if GEMINI_KEY:
-        out.append({"id": "gemini:" + GEMINI_MODEL, "label": GEMINI_MODEL + " (Google)"})
+    for p in COMPAT:
+        out.append({"id": f"{p[0]}:{p[3]}", "label": f"{p[3]} ({p[5]})"})
     return out
 
 
 def scrub(text) -> str:
     """Hide any secret that ends up inside an error message."""
     text = str(text)
-    for v in (os.getenv("GROQ_API_KEY", ""), os.getenv("TAVILY_API_KEY", ""), GEMINI_KEY, UP_TOKEN, ACCESS_CODE):
+    for v in (os.getenv("GROQ_API_KEY", ""), os.getenv("TAVILY_API_KEY", ""), GEMINI_KEY, OR_KEY, UP_TOKEN, ACCESS_CODE):
         v = v.strip()
         if len(v) > 4:
             text = text.replace(v, "***")
@@ -313,15 +325,13 @@ def start_stream(msgs, first=None):
     raise err
 
 
-def gemini_turn(msgs):
-    """Fallback: one non-streaming call through Gemini's OpenAI-compatible endpoint."""
-    r = httpx.post(
-        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-        headers={"Authorization": f"Bearer {GEMINI_KEY}", "x-goog-api-key": GEMINI_KEY},
-        json={"model": GEMINI_MODEL, "messages": msgs, "max_tokens": MAX_TOKENS, **tool_args()},
-        timeout=60)
+def compat_turn(p, msgs):
+    """One non-streaming call to an OpenAI-format provider. Returns (text, tool_calls)."""
+    name, url, key, model, extra, _ = p
+    r = httpx.post(url, headers={"Authorization": f"Bearer {key}", **extra}, timeout=60,
+                   json={"model": model, "messages": msgs, "max_tokens": MAX_TOKENS, **tool_args()})
     if r.status_code != 200:
-        print("Gemini fallback failed:", r.status_code, r.text[:300], flush=True)
+        print(f"{name} failed:", r.status_code, scrub(r.text[:300]), flush=True)
         r.raise_for_status()
     m = r.json()["choices"][0]["message"]
     calls = {i: {"id": tc.get("id") or f"call_{i}", "name": tc["function"]["name"],
@@ -331,9 +341,21 @@ def gemini_turn(msgs):
 
 def model_turn(msgs, user="?", choice="auto"):
     """One model call. Streams tokens as events; returns (text, tool_calls)."""
-    if choice.startswith("gemini:") and GEMINI_KEY:
-        record_call("gemini", GEMINI_MODEL, user)
-        text, calls = gemini_turn(msgs)
+    def compat(only=None):
+        last = None
+        for p in COMPAT:
+            if only and p[0] != only:
+                continue
+            try:
+                record_call(p[0], p[3], user)
+                return compat_turn(p, msgs)
+            except Exception as e:
+                last = e
+        raise last or RuntimeError("That model isn't available.")
+
+    prefix = choice.split(":", 1)[0]
+    if prefix in {p[0] for p in COMPAT}:
+        text, calls = compat(prefix)
         if text:
             yield sse({"t": "token", "v": text})
         return text, calls
@@ -341,10 +363,9 @@ def model_turn(msgs, user="?", choice="auto"):
         stream, used = start_stream(msgs, choice[5:] if choice.startswith("groq:") else None)
         record_call("groq", used, user)
     except (RateLimitError, NotFoundError):
-        if not GEMINI_KEY:
+        if not COMPAT:
             raise
-        record_call("gemini", GEMINI_MODEL, user)
-        text, calls = gemini_turn(msgs)
+        text, calls = compat()
         if text:
             yield sse({"t": "token", "v": text})
         return text, calls
