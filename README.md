@@ -1,4 +1,4 @@
-# AI Chatbot Models: Groq+Tavily+Gemini+Openrouter
+# AI Chatbot Models: Groq+Tavily+Gemini+OpenRouter+Mistral
 
 A small web chatbot. Models include OpenAI Chat GPT 4.0, Gemini 3.8 Flash, and mixed. Tavily provides web search when the model needs current info. Built to run on Render's free tier.
 
@@ -14,7 +14,7 @@ Open http://localhost:8000
 1. Push this folder to a public GitHub repo (never commit `.env`).
 2. In Render: **New > Blueprint**, pick the repo. It reads `render.yaml`.
    (Or **New > Web Service**, runtime Python, instance type **Free**, build `pip install -r requirements.txt`, start `uvicorn main:app --host 0.0.0.0 --port $PORT`. Add the two API keys under Environment. The `.python-version` file pins Python 3.12.)
-3. When prompted, set `GROQ_API_KEY` and `TAVILY_API_KEY`.
+3. When prompted, set `GROQ_API_KEY`, `TAVILY_API_KEY`, and `MISTRAL_API_KEY`.
 4. Deploy. The free service sleeps after ~15 min idle; the first request afterward is slow.
 
 ## Notes
@@ -38,6 +38,7 @@ Below are all environment variables used by the application:
 | `ACCESS_CODE` | Password/code required to access the chatbot interface. |
 | `DAILY_BUDGET_GEMINI` | Daily budget limit for Gemini API usage (e.g., `10.00`). |
 | `DAILY_BUDGET_GROQ` | Daily budget limit for Groq API usage (e.g., `10.00`). |
+| `DAILY_BUDGET_MISTRAL` | Daily budget limit for Mistral API usage (default: `200`). |
 | `DAILY_LIMIT_MAX` | Maximum daily usage/request cap (e.g., `100`). |
 | `DAILY_LIMIT_MIN` | Minimum daily usage threshold (e.g., `10`). |
 | `GEMINI_API_KEY` | API key from [Google AI Studio](https://aistudio.google.com/). |
