@@ -1,4 +1,4 @@
-import ast, hashlib, hmac, json, math, operator, os, re, time
+import ast, base64, hashlib, hmac, io, json, math, operator, os, re, time
 from collections import defaultdict, deque
 from datetime import date
 from pathlib import Path
@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from groq import Groq, NotFoundError, RateLimitError
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
+from huggingface_hub import InferenceClient
 
 load_dotenv()
 BASE_DIR = Path(__file__).parent
@@ -42,24 +43,22 @@ BUDGET = {
     "groq": int(os.getenv("DAILY_BUDGET_GROQ", "300")),
     "gemini": int(os.getenv("DAILY_BUDGET_GEMINI", "200")),
     "openrouter": int(os.getenv("DAILY_BUDGET_OPENROUTER", "40")),
-    "mistral": int(os.getenv("DAILY_BUDGET_MISTRAL", "200")),
+    "huggingface": int(os.getenv("DAILY_BUDGET_HUGGINGFACE", "10")),
 }
 UP_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")   # optional: makes counters survive restarts
 UP_TOKEN = env_secret("UPSTASH_REDIS_REST_TOKEN")
 UPSTASH_DISABLED = False
+HF_TOKEN = env_secret("HF_TOKEN")
+HF_IMAGE_MODEL = os.getenv("HF_IMAGE_MODEL", "black-forest-labs/FLUX.1-schnell").strip()
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_SECRET_KEY = env_secret("SUPABASE_SECRET_KEY") or env_secret("SUPABASE_SERVICE_ROLE_KEY")
 GEMINI_KEY = "" if "gemini" in OFF else env_secret("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-MISTRAL_KEY = "" if "mistral" in OFF else env_secret("MISTRAL_API_KEY")
-MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-latest").strip()
-MISTRAL_IMAGE_MODEL = os.getenv("MISTRAL_IMAGE_MODEL", "mistral-medium-latest").strip()
 ACCESS_CODE = os.getenv("ACCESS_CODE", "").strip()
 OR_KEY = "" if "openrouter" in OFF else env_secret("OPENROUTER_API_KEY")
 OR_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free").strip()  # free router picks a free model that supports tools
 # Fallback providers that speak the OpenAI chat format: (name, url, key, model, extra headers, label)
 COMPAT = []
-if MISTRAL_KEY:
-    COMPAT.append(("mistral", "https://api.mistral.ai/v1/chat/completions",
-                   MISTRAL_KEY, MISTRAL_MODEL, {}, "Mistral"))
 if GEMINI_KEY:
     COMPAT.append(("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
                    GEMINI_KEY, GEMINI_MODEL, {"x-goog-api-key": GEMINI_KEY}, "Google"))
@@ -326,7 +325,7 @@ def model_choices():
 def scrub(text) -> str:
     """Hide any secret that ends up inside an error message."""
     text = str(text)
-    for v in (os.getenv("GROQ_API_KEY", ""), os.getenv("TAVILY_API_KEY", ""), GEMINI_KEY, MISTRAL_KEY, OR_KEY, UP_TOKEN, ACCESS_CODE):
+    for v in (os.getenv("GROQ_API_KEY", ""), os.getenv("TAVILY_API_KEY", ""), GEMINI_KEY, OR_KEY, HF_TOKEN, SUPABASE_SECRET_KEY, UP_TOKEN, ACCESS_CODE):
         v = v.strip()
         if len(v) > 4:
             text = text.replace(v, "***")
@@ -420,51 +419,17 @@ def model_turn(msgs, user="?", choice="auto"):
     return text, calls
 
 
-def generate_mistral_image(prompt: str, user: str) -> dict:
-    """Generate one image using Mistral's built-in image_generation tool."""
-    if not MISTRAL_KEY:
-        raise RuntimeError("Mistral is not configured.")
-    r = httpx.post(
-        "https://api.mistral.ai/v1/conversations",
-        headers={"Authorization": f"Bearer {MISTRAL_KEY}", "Content-Type": "application/json"},
-        timeout=120,
-        json={
-            "model": MISTRAL_IMAGE_MODEL,
-            "inputs": prompt,
-            "tools": [{"type": "image_generation"}],
-        },
-    )
-    if r.status_code != 200:
-        print("Mistral image generation failed:", r.status_code, scrub(r.text[:300]), flush=True)
-        r.raise_for_status()
-    data = r.json()
-    chunk = _find_tool_file(data.get("outputs", []))
-    if not chunk:
-        raise RuntimeError("Mistral completed the request but returned no generated image file.")
-    file_id = chunk["file_id"]
-    u = httpx.get(
-        f"https://api.mistral.ai/v1/files/{file_id}/url",
-        headers={"Authorization": f"Bearer {MISTRAL_KEY}"},
-        params={"expiry": 24},
-        timeout=30,
-    )
-    if u.status_code != 200:
-        print("Mistral image URL failed:", u.status_code, scrub(u.text[:300]), flush=True)
-        u.raise_for_status()
-    signed = u.json().get("url")
-    if not signed:
-        raise RuntimeError("Mistral did not return an image URL.")
-    text_parts = []
-    for output in data.get("outputs", []):
-        content = output.get("content") if isinstance(output, dict) else None
-        if isinstance(content, list):
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
-                    text_parts.append(item["text"])
-        elif isinstance(content, str) and content:
-            text_parts.append(content)
-    record_call("mistral", MISTRAL_IMAGE_MODEL, user)
-    return {"url": signed, "file_id": file_id, "text": "\n".join(text_parts).strip()}
+def generate_image(prompt: str, user: str) -> dict:
+    """Generate an image through Hugging Face Inference Providers."""
+    if not HF_TOKEN:
+        raise RuntimeError("Hugging Face image generation is not configured.")
+    client = InferenceClient(provider="auto", api_key=HF_TOKEN)
+    image = client.text_to_image(prompt, model=HF_IMAGE_MODEL)
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    data_url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    record_call("huggingface", HF_IMAGE_MODEL, user)
+    return {"url": data_url, "model": HF_IMAGE_MODEL}
 
 
 def run_chat(msgs, refund=None, user="?", choice="auto"):
@@ -530,12 +495,12 @@ def chat(body: ChatRequest, request: Request):
 
 
 @app.post("/api/generate-image")
-def generate_image(body: ImageRequest, request: Request):
+def generate_image_endpoint(body: ImageRequest, request: Request):
     check_rate_limit(request)
     if "image" in OFF:
         raise HTTPException(404, "Image generation is turned off.")
-    if not MISTRAL_KEY:
-        raise HTTPException(503, "Mistral is not configured. Add MISTRAL_API_KEY in Render.")
+    if not HF_TOKEN:
+        raise HTTPException(503, "Image generation is not configured. Add HF_TOKEN in Render.")
     key = f"u:{today()}:{client_ip(request)}"
     refund = None
     if LIMITS_ON:
@@ -545,55 +510,11 @@ def generate_image(body: ImageRequest, request: Request):
         incr(key)
         refund = lambda: incr(key, -1)
     try:
-        result = generate_mistral_image(body.prompt.strip(), client_ip(request))
-        return result
+        return generate_image(body.prompt.strip(), client_ip(request))
     except Exception as e:
         if refund:
             refund()
         raise HTTPException(502, f"Image generation failed: {scrub(e)}")
-
-
-@app.get("/api/image-url/{file_id}")
-def image_url(file_id: str, request: Request):
-    check_rate_limit(request)
-    if "image" in OFF:
-        raise HTTPException(404, "Image generation is turned off.")
-    if not MISTRAL_KEY:
-        raise HTTPException(503, "Mistral is not configured.")
-    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", file_id):
-        raise HTTPException(400, "Invalid image file ID.")
-    r = httpx.get(
-        f"https://api.mistral.ai/v1/files/{file_id}/url",
-        headers={"Authorization": f"Bearer {MISTRAL_KEY}"},
-        params={"expiry": 24},
-        timeout=30,
-    )
-    if r.status_code != 200:
-        print("Mistral image URL failed:", r.status_code, scrub(r.text[:300]), flush=True)
-        r.raise_for_status()
-    signed = r.json().get("url")
-    if not signed:
-        raise HTTPException(502, "Mistral did not return an image URL.")
-    return {"url": signed}
-
-
-@app.get("/api/mistral-status")
-def mistral_status():
-    if not MISTRAL_KEY:
-        return {"configured": False, "valid": False}
-    try:
-        r = httpx.get(
-            "https://api.mistral.ai/v1/models",
-            headers={"Authorization": f"Bearer {MISTRAL_KEY}"},
-            timeout=15,
-        )
-        if r.status_code == 200:
-            return {"configured": True, "valid": True}
-        if r.status_code == 401:
-            return {"configured": True, "valid": False, "error": "Invalid Mistral API key"}
-        return {"configured": True, "valid": False, "error": f"Mistral returned HTTP {r.status_code}"}
-    except Exception as e:
-        return {"configured": True, "valid": False, "error": scrub(e)}
 
 
 @app.post("/api/transcribe")
@@ -614,6 +535,66 @@ async def transcribe(request: Request):
     return {"text": res.text}
 
 
+def supabase_headers():
+    return {
+        "apikey": SUPABASE_SECRET_KEY,
+        "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def valid_chat_id(chat_id: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-fA-F-]{36}", chat_id))
+
+
+class CloudChatRequest(BaseModel):
+    messages: list[Message] = Field(default_factory=list, max_length=100)
+
+
+@app.get("/api/cloud-chat/{chat_id}")
+def get_cloud_chat(chat_id: str, request: Request):
+    check_rate_limit(request)
+    if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
+        raise HTTPException(503, "Supabase cloud chat is not configured.")
+    if not valid_chat_id(chat_id):
+        raise HTTPException(400, "Invalid chat ID.")
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/chats",
+            headers=supabase_headers(),
+            params={"select": "messages,updated_at", "chat_id": f"eq.{chat_id}", "limit": "1"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            r.raise_for_status()
+        rows = r.json()
+        return {"messages": rows[0]["messages"] if rows else []}
+    except Exception as e:
+        raise HTTPException(502, f"Cloud chat read failed: {scrub(e)}")
+
+
+@app.put("/api/cloud-chat/{chat_id}")
+def put_cloud_chat(chat_id: str, body: CloudChatRequest, request: Request):
+    check_rate_limit(request)
+    if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
+        raise HTTPException(503, "Supabase cloud chat is not configured.")
+    if not valid_chat_id(chat_id):
+        raise HTTPException(400, "Invalid chat ID.")
+    payload = {"chat_id": chat_id, "messages": [m.model_dump() for m in body.messages]}
+    try:
+        r = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/chats?on_conflict=chat_id",
+            headers={**supabase_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+            json=payload,
+            timeout=10,
+        )
+        if r.status_code not in (200, 201, 204):
+            r.raise_for_status()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(502, f"Cloud chat write failed: {scrub(e)}")
+
+
 @app.get("/api/models")
 def models():
     return {"models": [{"id": "auto", "label": "Auto (best available)"}] + model_choices()}
@@ -624,8 +605,10 @@ def config():
     return {
         "off": sorted(OFF),
         "access": bool(ACCESS_CODE),
-        "mistral": bool(MISTRAL_KEY),
-        "image": bool(MISTRAL_KEY) and "image" not in OFF,
+        "image": bool(HF_TOKEN) and "image" not in OFF,
+        "image_provider": "Hugging Face" if HF_TOKEN else "",
+        "image_model": HF_IMAGE_MODEL if HF_TOKEN else "",
+        "cloud_chat": bool(SUPABASE_URL and SUPABASE_SECRET_KEY),
     }
 
 
