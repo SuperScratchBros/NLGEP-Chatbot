@@ -52,13 +52,65 @@ button:hover{background:#f2f2f2}
 </div>
 <script>
 const overlay=document.getElementById("overlay"),loginForm=document.getElementById("loginForm"),username=document.getElementById("username"),loginError=document.getElementById("loginError"),messagesEl=document.getElementById("messages"),usersEl=document.getElementById("users"),onlineCount=document.getElementById("onlineCount"),input=document.getElementById("messageInput");
-let lastSeen="",pollId=null;
+let lastMessageId="",pollId=null,polling=false;
 function fmt(t){try{return new Date(t).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"})}catch(e){return""}}
-function draw(rows,me){rows.forEach(m=>{const d=document.createElement("div");d.className="msg"+(m.username===me?" me":"");d.innerHTML='<div class="name"></div><div class="body"></div><div class="time"></div>';d.querySelector(".name").textContent=m.username;d.querySelector(".body").textContent=m.content;d.querySelector(".time").textContent=fmt(m.created_at);messagesEl.appendChild(d)});messagesEl.scrollTop=messagesEl.scrollHeight}
-async function refreshMessages(){try{const url=lastSeen?"/api/chat-messages?after="+encodeURIComponent(lastSeen):"/api/chat-messages";const r=await fetch(url,{credentials:"same-origin"});if(r.status===401){overlay.style.display="flex";return}if(!r.ok)return;const d=await r.json();draw(d.messages,d.me);if(d.messages.length)lastSeen=d.messages[d.messages.length-1].created_at}catch(e){}}
-async function refreshUsers(){try{const r=await fetch("/api/chat-users",{credentials:"same-origin"});if(!r.ok)return;const d=await r.json();onlineCount.textContent=d.count+" online";usersEl.innerHTML="";d.users.forEach(u=>{const x=document.createElement("div");x.className="user";x.textContent=u.username;usersEl.appendChild(x)})}catch(e){}}
-async function start(){try{const r=await fetch("/api/chat-me",{credentials:"same-origin"});if(!r.ok)return;const d=await r.json();if(d.user){overlay.style.display="none";refreshMessages();refreshUsers();clearInterval(pollId);pollId=setInterval(()=>{refreshMessages();refreshUsers()},1500)}}catch(e){}}
-loginForm.onsubmit=async e=>{e.preventDefault();loginError.textContent="";try{const r=await fetch("/api/chat-session",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:username.value.trim()})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||"Could not join.");overlay.style.display="none";messagesEl.innerHTML="";lastSeen="";await start()}catch(err){loginError.textContent=err.message}}
-document.getElementById("composer").onsubmit=async e=>{e.preventDefault();const content=input.value.trim();if(!content)return;input.value="";try{const r=await fetch("/api/chat-messages",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({content})});if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||"Send failed.")}const d=await r.json();draw([d.message],d.message.username);lastSeen=d.message.created_at}catch(err){input.value=content;alert(err.message)}}
+function draw(rows,me){
+  const shouldStick=messagesEl.scrollHeight-messagesEl.scrollTop-messagesEl.clientHeight<80;
+  rows.forEach(m=>{
+    const d=document.createElement("div");
+    d.className="msg"+(m.username===me?" me":"");
+    d.innerHTML='<div class="name"></div><div class="body"></div><div class="time"></div>';
+    d.querySelector(".name").textContent=m.username;
+    d.querySelector(".body").textContent=m.content;
+    d.querySelector(".time").textContent=fmt(m.created_at);
+    messagesEl.appendChild(d);
+  });
+  if(shouldStick)messagesEl.scrollTop=messagesEl.scrollHeight;
+}
+async function refreshMessages(){
+  if(polling)return;
+  polling=true;
+  try{
+    const url=lastMessageId?"/api/chat-messages?after="+encodeURIComponent(lastMessageId):"/api/chat-messages";
+    const r=await fetch(url,{credentials:"same-origin"});
+    if(r.status===401){overlay.style.display="flex";clearInterval(pollId);pollId=null;return}
+    if(!r.ok)return;
+    const d=await r.json();
+    draw(d.messages,d.me);
+    if(d.messages.length)lastMessageId=String(d.messages[d.messages.length-1].message_id);
+  }catch(e){}finally{polling=false}
+}
+async function refreshUsers(){
+  try{
+    const r=await fetch("/api/chat-users",{credentials:"same-origin"});
+    if(r.status===401){overlay.style.display="flex";clearInterval(pollId);pollId=null;return}
+    if(!r.ok)return;
+    const d=await r.json();
+    onlineCount.textContent=d.count+" online";
+    usersEl.innerHTML="";
+    d.users.forEach(u=>{const x=document.createElement("div");x.className="user";x.textContent=u.username;usersEl.appendChild(x)});
+  }catch(e){}
+}
+async function start(){
+  try{
+    const r=await fetch("/api/chat-me",{credentials:"same-origin"});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      loginError.textContent=d.detail||"Could not connect to InfiNet.";
+      return;
+    }
+    if(d.user){
+      overlay.style.display="none";
+      loginError.textContent="";
+      clearInterval(pollId);
+      lastMessageId="";
+      await refreshMessages();
+      await refreshUsers();
+      pollId=setInterval(()=>{refreshMessages();refreshUsers()},1500);
+    }
+  }catch(e){loginError.textContent="Could not connect to InfiNet. Please try again."}
+}
+loginForm.onsubmit=async e=>{e.preventDefault();loginError.textContent="";try{const r=await fetch("/api/chat-session",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:username.value.trim()})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||"Could not join.");overlay.style.display="none";messagesEl.innerHTML="";lastMessageId="";await start()}catch(err){loginError.textContent=err.message}}
+document.getElementById("composer").onsubmit=async e=>{e.preventDefault();const content=input.value.trim();if(!content)return;input.value="";try{const r=await fetch("/api/chat-messages",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({content})});if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||"Send failed.")}const d=await r.json();draw([d.message],d.message.username);lastMessageId=String(d.message.message_id)}catch(err){input.value=content;alert(err.message)}}
 document.getElementById("logout").onclick=async()=>{await fetch("/api/chat-session",{method:"DELETE",credentials:"same-origin"});clearInterval(pollId);location.reload()};start();
 </script></body></html>
