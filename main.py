@@ -318,7 +318,7 @@ def model_choices():
 def scrub(text) -> str:
     """Hide any secret that ends up inside an error message."""
     text = str(text)
-    for v in (os.getenv("GROQ_API_KEY", ""), os.getenv("TAVILY_API_KEY", ""), GEMINI_KEY, OR_KEY, HF_TOKEN, SUPABASE_SECRET_KEY, UP_TOKEN, ACCESS_CODE):
+    for v in (os.getenv("GROQ_API_KEY", ""), os.getenv("TAVILY_API_KEY", ""), GEMINI_KEY, OR_KEY, SUPABASE_SECRET_KEY, UP_TOKEN, ACCESS_CODE):
         v = v.strip()
         if len(v) > 4:
             text = text.replace(v, "***")
