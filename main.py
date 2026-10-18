@@ -1,4 +1,7 @@
+import hashlib
+import hmac
 import os
+import secrets
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -30,7 +33,9 @@ SUPABASE_SECRET_KEY = env_secret("SUPABASE_SECRET_KEY") or env_secret("SUPABASE_
 
 RATE_LIMIT_IP, RATE_LIMIT_GLOBAL = 20, 120  # write requests per minute
 SESSION_COOKIE = "infinet_session"
-SESSION_MAX_AGE = 60 * 60 * 24 * 30
+# Sessions are browser-session cookies (no max_age), so closing the browser logs you out.
+# This is only the server-side upper bound for a single session.
+SESSION_MAX_AGE = 60 * 60 * 12
 
 app = FastAPI()
 ip_hits: dict[str, deque] = defaultdict(deque)
@@ -78,10 +83,36 @@ def check_rate_limit(request: Request) -> None:
     global_hits.append(now)
 
 
+# ---------------------------------------------------------------- passwords
+
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
+    return f"{salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored) -> bool:
+    try:
+        salt_hex, digest_hex = (stored or "").split("$")
+        salt, expected = bytes.fromhex(salt_hex), bytes.fromhex(digest_hex)
+    except ValueError:
+        return False
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=2 ** 14, r=8, p=1, dklen=len(expected))
+    return hmac.compare_digest(digest, expected)
+
+
+# A throwaway hash so login takes about the same time whether or not the username exists.
+DUMMY_HASH = hash_password("not-a-real-password")
+
+
 # ---------------------------------------------------------------- Supabase
 
-class UsernameRequest(BaseModel):
-    username: str = Field(min_length=2, max_length=24, pattern=r"^[A-Za-z0-9_ .-]+$")
+USERNAME_PATTERN = r"^[A-Za-z0-9_ .-]+$"
+
+
+class CredentialsRequest(BaseModel):
+    username: str = Field(min_length=2, max_length=24, pattern=USERNAME_PATTERN)
+    password: str = Field(min_length=6, max_length=128)
 
 
 class ChatMessageRequest(BaseModel):
@@ -158,6 +189,35 @@ def delete_user_quietly(user):
         pass
 
 
+def clean_username(raw: str) -> str:
+    username = " ".join(raw.strip().split())
+    if len(username) < 2:
+        raise HTTPException(400, "Username must be at least 2 characters.")
+    return username
+
+
+def find_user(username: str):
+    """Case-insensitive exact lookup (ilike can over-match '_', so compare again in Python)."""
+    rows = supabase_rows("chat_users", {"select": "user_id,username,password_hash,is_guest",
+                                        "username": f"ilike.{username}", "limit": "50"})
+    for row in rows:
+        if row["username"].lower() == username.lower():
+            return row
+    return None
+
+
+def start_session(user, request: Request, response: Response) -> None:
+    """Create a server-side session and set a non-persistent cookie (cleared when the browser closes)."""
+    session_id = os.urandom(24).hex()
+    expires_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + SESSION_MAX_AGE))
+    supabase_rows("chat_sessions", method="POST",
+                  payload={"session_id": session_id, "user_id": user["user_id"], "username": user["username"],
+                           "expires_at": expires_at, "last_seen": utc_now()},
+                  prefer="return=minimal")
+    response.set_cookie(SESSION_COOKIE, session_id, httponly=True,
+                        samesite="lax", secure=request.url.scheme == "https")
+
+
 # ---------------------------------------------------------------- API
 
 @app.get("/health")
@@ -170,28 +230,21 @@ def config():
     return {"off": sorted(OFF), "cloud_chat": supabase_configured()}
 
 
-@app.post("/api/chat-session")
-def create_chat_session(body: UsernameRequest, request: Request, response: Response):
+@app.post("/api/chat-register")
+def register(body: CredentialsRequest, request: Request, response: Response):
     check_rate_limit(request)
-    if not supabase_configured():
-        raise HTTPException(503, "Supabase chat is not configured. Add SUPABASE_URL and SUPABASE_SECRET_KEY in Render.")
-    username = " ".join(body.username.strip().split())
-    if not username:
-        raise HTTPException(400, "Username cannot be empty.")
-    # A random session ID is the browser's login token. No password is stored.
-    session_id = os.urandom(24).hex()
+    username = clean_username(body.username)
+    if username.lower().startswith("guest"):
+        raise HTTPException(400, "Usernames starting with \"Guest\" are reserved.")
     user = None
     try:
-        existing = supabase_rows("chat_users", {"select": "user_id,username", "username": f"ilike.{username}", "limit": "1"})
-        if existing:
+        if find_user(username):
             raise HTTPException(409, "That username is already taken. Choose another one.")
         user = supabase_rows("chat_users", {"select": "user_id,username"}, method="POST",
-                             payload={"username": username}, prefer="return=representation")[0]
-        expires_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + SESSION_MAX_AGE))
-        supabase_rows("chat_sessions", method="POST",
-                      payload={"session_id": session_id, "user_id": user["user_id"], "username": user["username"],
-                               "expires_at": expires_at, "last_seen": utc_now()},
-                      prefer="return=minimal")
+                             payload={"username": username, "password_hash": hash_password(body.password),
+                                      "is_guest": False},
+                             prefer="return=representation")[0]
+        start_session(user, request, response)
     except HTTPException as e:
         delete_user_quietly(user)
         if e.status_code == 502 and "duplicate key" in str(e.detail).lower():
@@ -199,10 +252,60 @@ def create_chat_session(body: UsernameRequest, request: Request, response: Respo
         raise
     except Exception as e:
         delete_user_quietly(user)
-        raise HTTPException(502, f"Could not create chat session: {scrub(e)}")
-    response.set_cookie(SESSION_COOKIE, session_id, max_age=SESSION_MAX_AGE, httponly=True,
-                        samesite="lax", secure=request.url.scheme == "https")
-    return {"username": user["username"]}
+        raise HTTPException(502, f"Could not create account: {scrub(e)}")
+    return {"username": user["username"], "guest": False}
+
+
+@app.post("/api/chat-login")
+def login(body: CredentialsRequest, request: Request, response: Response):
+    check_rate_limit(request)
+    username = clean_username(body.username)
+    user = find_user(username)
+    stored = user.get("password_hash") if user else None
+    ok = verify_password(body.password, stored or DUMMY_HASH)
+    if not user or not stored or not ok:
+        raise HTTPException(401, "Incorrect username or password.")
+    try:
+        start_session(user, request, response)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Could not sign in: {scrub(e)}")
+    return {"username": user["username"], "guest": False}
+
+
+@app.post("/api/chat-guest")
+def guest_login(request: Request, response: Response):
+    check_rate_limit(request)
+    # Housekeeping: guests are throwaway, so drop any that are older than a session could be.
+    try:
+        cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - SESSION_MAX_AGE))
+        supabase_rows("chat_users", {"is_guest": "eq.true", "created_at": f"lt.{cutoff}"}, method="DELETE")
+    except Exception:
+        pass
+    user = None
+    for _ in range(8):
+        name = f"Guest-{secrets.randbelow(10000):04d}"
+        try:
+            user = supabase_rows("chat_users", {"select": "user_id,username"}, method="POST",
+                                 payload={"username": name, "password_hash": None, "is_guest": True},
+                                 prefer="return=representation")[0]
+            break
+        except HTTPException as e:
+            if e.status_code == 502 and "duplicate key" in str(e.detail).lower():
+                continue
+            raise
+    if user is None:
+        raise HTTPException(503, "Could not find a free guest name. Try again.")
+    try:
+        start_session(user, request, response)
+    except HTTPException:
+        delete_user_quietly(user)
+        raise
+    except Exception as e:
+        delete_user_quietly(user)
+        raise HTTPException(502, f"Could not start guest session: {scrub(e)}")
+    return {"username": user["username"], "guest": True}
 
 
 @app.delete("/api/chat-session")
@@ -211,7 +314,13 @@ def delete_chat_session(request: Request, response: Response):
     response.delete_cookie(SESSION_COOKIE)
     if session_id and supabase_configured():
         try:
+            rows = supabase_rows("chat_sessions", {"select": "user_id", "session_id": f"eq.{session_id}", "limit": "1"})
             supabase_rows("chat_sessions", {"session_id": f"eq.{session_id}"}, method="DELETE")
+            if rows:
+                # Guests vanish when they leave (their messages go with them via ON DELETE CASCADE).
+                users = supabase_rows("chat_users", {"select": "user_id,is_guest", "user_id": f"eq.{rows[0]['user_id']}"})
+                if users and users[0].get("is_guest"):
+                    delete_user_quietly(users[0])
         except HTTPException:
             pass
     return {"ok": True}
@@ -225,7 +334,7 @@ def chat_me(request: Request):
 @app.get("/api/chat-users")
 def chat_users(request: Request):
     if not session_user(request):
-        raise HTTPException(401, "Choose a username first.")
+        raise HTTPException(401, "Please sign in first.")
     cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 120))
     rows = supabase_rows("chat_sessions", {
         "select": "user_id,username,last_seen",
@@ -247,7 +356,7 @@ def chat_users(request: Request):
 def chat_messages(request: Request, after: str = ""):
     me = session_user(request)
     if not me:
-        raise HTTPException(401, "Choose a username first.")
+        raise HTTPException(401, "Please sign in first.")
     params = {
         "select": "message_id,user_id,username,content,created_at",
         "order": "message_id.asc",
@@ -263,7 +372,7 @@ def send_chat_message(body: ChatMessageRequest, request: Request):
     check_rate_limit(request)
     me = session_user(request)
     if not me:
-        raise HTTPException(401, "Choose a username first.")
+        raise HTTPException(401, "Please sign in first.")
     content = body.content.strip()
     if not content:
         raise HTTPException(400, "Message cannot be empty.")
