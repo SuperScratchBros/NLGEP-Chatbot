@@ -3,13 +3,52 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Infinity Network</title>
-<style>
-*{box-sizing:border-box}html,body{height:100%;margin:0}body{font-family:Arial,sans-serif;background:radial-gradient(circle at 20% 0%,#eaffea 0,#f7fff7 30%,#fff 70%);color:#000;overflow:hidden}main{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px;text-align:center}.glass{background:rgba(255,255,255,.68);backdrop-filter:blur(18px);border:1px solid rgba(0,0,0,.14);box-shadow:0 12px 40px rgba(0,0,0,.08);border-radius:20px}.logo{font-size:clamp(56px,10vw,110px);font-weight:700;margin:0 0 10px}.title{font-size:clamp(34px,6vw,64px);font-weight:700;margin:0}.sub{margin:8px 0 34px;font-size:18px}.buttons{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}button{min-width:190px;padding:14px 24px;background:rgba(255,255,255,.78);color:#000;border:1px solid #000;border-radius:12px;font:700 18px Arial,sans-serif;cursor:pointer}button:hover{background:#efffef}.card{margin-top:22px;padding:16px 20px;max-width:560px;font-size:14px;line-height:1.5}.footer{position:absolute;bottom:18px;font-size:12px;opacity:.6}
-</style>
+<title>NLGEP Chat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" rel="stylesheet">
+<link href="/static/nlgep.css" rel="stylesheet">
 </head>
-<body><main>
-<h1 class="logo">∞</h1><div class="title">Infinity Network</div><div class="sub">InfiNet</div>
-<div class="buttons"><button onclick="location.href='/ai'">NLGEP AI</button><button onclick="location.href='/chat'">NLGEP Chat</button></div>
-<div class="card glass">Connect with NLGEP AI or join the InfiNet global conversation.</div><div class="footer">Infinity Network · NLGEP</div>
-</main></body></html>
+<body>
+<nav aria-label="NLGEP navigation" id="nlSidebar">
+  <div class="nl-logo"><i class="fas fa-earth-americas"></i><span>NLGEP</span></div>
+  <a class="nl-nav active" href="/"><i class="fas fa-house"></i><span>Home</span></a>
+  <a class="nl-nav" href="/chat"><i class="fas fa-comments"></i><span>Chat</span></a>
+</nav>
+
+<section class="nl-page">
+  <div class="titlebar"><div class="nl-brand"><i class="fas fa-earth-americas"></i>NLGEP<span class="nl-beta">BETA</span></div></div>
+  <div class="nl-body"><div class="nl-card" id="nlHomeBody">
+    <span class="nl-orb o1"></span><span class="nl-orb o2"></span><span class="nl-orb o3"></span>
+    <div class="nl-glass" id="nlHomeClockCard"><i class="fas fa-moon" id="nlHomeIcon"></i><div><div id="nlHomeClock">--:--</div><div id="nlHomeDate">-</div></div></div>
+    <div class="nl-glass" id="nlHomeTitleCard"><i class="fas fa-earth-americas"></i><span>NLGEP</span><span class="nl-beta">BETA</span></div>
+    <div class="nl-flip" id="nlFlip" title="Click to flip">
+      <div class="nl-flip-inner">
+        <div class="nl-face">Next Learning Generation Education Program</div>
+        <div class="nl-face nl-back">Next Level Games, Entertainment, and Proxies</div>
+      </div>
+    </div>
+    <div class="nl-home-actions"><a class="tool-btn primary" href="/chat"><i class="fas fa-comments"></i>Join the Chat</a></div>
+    <div class="nl-fine">Chat with everyone on the InfiNet global lobby</div>
+  </div></div>
+</section>
+
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i)};
+  function tick(){
+    var d=new Date(), h=d.getHours();
+    $('nlHomeClock').textContent=d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+    $('nlHomeDate').textContent=d.toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'});
+    $('nlHomeIcon').className='fas '+(h>=6&&h<18?'fa-sun':'fa-moon');
+  }
+  tick(); setInterval(tick,20000);
+  var flip=$('nlFlip'), timer;
+  function start(){clearInterval(timer);timer=setInterval(function(){flip.classList.toggle('flipped')},5000)}
+  flip.addEventListener('click',function(){flip.classList.toggle('flipped');start()});
+  start();
+})();
+</script>
+</body>
+</html>
