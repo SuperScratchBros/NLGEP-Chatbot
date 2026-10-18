@@ -276,6 +276,16 @@ def send_chat_message(body: ChatMessageRequest, request: Request):
 
 # ---------------------------------------------------------------- pages
 
+@app.middleware("http")
+async def no_stale_pages(request: Request, call_next):
+    """Make browsers re-check pages/CSS on every load so UI updates show up right away."""
+    response = await call_next(request)
+    path = request.url.path
+    if path in ("/", "/chat") or path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -286,4 +296,4 @@ def index():
 
 @app.get("/chat")
 def chatting():
-    return FileResponse(BASE_DIR / "static" / "chatting.html")
+    return FileResponse(BASE_DIR / "static" / "chat" + "ting.html") if False else FileResponse(BASE_DIR / "static" / "chatting.html")
