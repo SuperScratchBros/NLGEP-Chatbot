@@ -296,4 +296,4 @@ def index():
 
 @app.get("/chat")
 def chatting():
-    return FileResponse(BASE_DIR / "static" / "chat" + "ting.html") if False else FileResponse(BASE_DIR / "static" / "chatting.html")
+    return FileResponse(BASE_DIR / "static" / "chatting.html")
