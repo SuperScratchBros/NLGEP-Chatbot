@@ -1,35 +1,23 @@
-# Infinity Network / InfiNet
+# NLGEP Chat / InfiNet
 
-Infinity Network is the home of **NLGEP AI** and community chatting.
-
-## Services
-
-**NLGEP AI** — the AI assistant with Groq, Gemini, and optional OpenRouter model selection, plus web tools, attachments, and voice transcription.
-
-**Chatting** — a Supabase-backed global InfiNet lobby where users choose unique usernames and message each other.
+NLGEP Chat is a Supabase-backed global lobby where users pick a unique username and message each other. It uses the same dark-green glass look as the NLGEP browser.
 
 ## Render environment
 
 Required:
-- `GROQ_API_KEY`
-- `TAVILY_API_KEY`
-
-Optional AI providers:
-- `GEMINI_API_KEY`
-- `GEMINI_MODEL`
-- `OPENROUTER_API_KEY`
-- `OPENROUTER_MODEL`
-
-InfiNet chatting:
 - `SUPABASE_URL`
 - `SUPABASE_SECRET_KEY`
 
-Supabase recommends the newer `sb_secret_...` server key for backend code. Keep it only on the server. citeturn653662search1
+Supabase recommends the newer `sb_secret_...` server key for backend code. Keep it only on the server.
 
-Run `supabase/schema.sql` once in the Supabase SQL Editor before using Chatting.
+Run `supabase/schema.sql` once in the Supabase SQL Editor before using Chat.
 
-The current chat UI uses lightweight polling through the FastAPI backend. Supabase Realtime can provide WebSocket database changes and is documented for live chat; Broadcast is the recommended approach for larger-scale real-time applications. citeturn653662search0turn653662search2
+The chat UI uses lightweight polling through the FastAPI backend.
 
 Important: you need **both** your Supabase project URL and server key. The API key alone is not enough to identify the project endpoint.
+
+Optional:
+- `DISABLED_FEATURES=cloudchat` turns chat off
+- `TRUST_PROXY_HEADERS=true` when running behind a proxy that sets `X-Forwarded-For`
 
 Never commit real API keys or a `.env` file.
