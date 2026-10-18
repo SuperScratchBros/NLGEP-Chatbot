@@ -1,11 +1,18 @@
 -- Infinity Network / InfiNet community chat
 -- Run this once in the Supabase SQL Editor.
+-- Safe to re-run: every statement is idempotent.
 
 create table if not exists public.chat_users (
   user_id uuid primary key default gen_random_uuid(),
   username text not null unique,
+  password_hash text,                       -- salt$scrypt-digest; null for guests
+  is_guest boolean not null default false,  -- guests are deleted when they leave
   created_at timestamptz not null default now()
 );
+
+-- For databases created before passwords/guests existed:
+alter table public.chat_users add column if not exists password_hash text;
+alter table public.chat_users add column if not exists is_guest boolean not null default false;
 
 create table if not exists public.chat_sessions (
   session_id text primary key,
@@ -26,6 +33,7 @@ create table if not exists public.chat_messages (
 create index if not exists chat_sessions_last_seen_idx on public.chat_sessions(last_seen);
 create index if not exists chat_sessions_expires_idx on public.chat_sessions(expires_at);
 create index if not exists chat_messages_created_idx on public.chat_messages(created_at desc);
+create index if not exists chat_users_guest_idx on public.chat_users(is_guest, created_at);
 
 alter table public.chat_users enable row level security;
 alter table public.chat_sessions enable row level security;

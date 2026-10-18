@@ -45,6 +45,7 @@ a{color:inherit;text-decoration:none}
 .nl-pill{font-size:12px;font-weight:600;color:var(--tx);padding:6px 12px;border-radius:99px;background:var(--surface);border:1px solid var(--bd);white-space:nowrap}
 .tool-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:38px;height:38px;padding:0 12px;border-radius:var(--radius-md);border:1px solid var(--bd);background:var(--surface);color:var(--tx2);cursor:pointer;font-size:14px;font-weight:600;transition:background .15s,color .15s,border-color .15s}
 .tool-btn:hover{background:var(--surface2);color:var(--tx);border-color:var(--bd2)}
+.tool-btn:disabled{opacity:.55;cursor:not-allowed}
 .tool-btn.primary{background:var(--ac);color:#06170f;border-color:var(--ac)}
 .tool-btn.primary:hover{background:var(--ac2);border-color:var(--ac2);color:#06170f}
 
@@ -76,23 +77,25 @@ a{color:inherit;text-decoration:none}
 .nl-fine{position:relative;z-index:1;font-size:12px;color:var(--tx3)}
 
 /* ---------- chat ---------- */
-.chat-card{display:grid;grid-template-columns:1fr 230px;background:rgba(255,255,255,.03)}
-.chat-main{min-width:0;display:flex;flex-direction:column;border-right:1px solid var(--bd)}
-.chat-head{padding:14px 18px;border-bottom:1px solid var(--bd);background:rgba(255,255,255,.04)}
+/* grid-template-rows + min-height:0 keep the column exactly as tall as the card, so the
+   message list scrolls internally and the composer (textbox) is never pushed off-screen. */
+.chat-card{display:grid;grid-template-columns:minmax(0,1fr) 230px;grid-template-rows:minmax(0,1fr);background:rgba(255,255,255,.03)}
+.chat-main{min-width:0;min-height:0;display:flex;flex-direction:column;border-right:1px solid var(--bd)}
+.chat-head{flex:none;padding:14px 18px;border-bottom:1px solid var(--bd);background:rgba(255,255,255,.04)}
 .chat-head strong{font-size:16px;color:var(--tx)}
 .muted{font-size:12px;color:var(--tx3)}
-.messages{flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:12px}
+.messages{flex:1;min-height:0;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:12px}
 .msg{max-width:min(760px,82%);padding:11px 14px;border-radius:16px;border:1px solid var(--bd);background:rgba(255,255,255,.08);box-shadow:0 5px 20px rgba(0,0,0,.18)}
 .msg.me{align-self:flex-end;background:rgba(207,232,216,.16);border-color:rgba(207,232,216,.34)}
 .msg .name{font-size:11px;font-weight:700;margin-bottom:4px;color:var(--ac)}
 .msg .body{white-space:pre-wrap;word-break:break-word;line-height:1.45;color:var(--tx)}
 .msg .time{font-size:10px;color:var(--tx3);margin-top:5px}
-.composer{display:flex;align-items:stretch;gap:8px;padding:12px;border-top:1px solid var(--bd);background:rgba(255,255,255,.04)}
+.composer{flex:none;display:flex;align-items:stretch;gap:8px;padding:12px;border-top:1px solid var(--bd);background:rgba(255,255,255,.04)}
 .composer .tool-btn{height:auto;padding:0 18px}
 .field{flex:1;min-width:0;background:rgba(255,255,255,.08);color:var(--tx);border:1px solid var(--bd);border-radius:12px;padding:12px 14px;outline:none;transition:border-color .15s,background .15s}
 .field::placeholder{color:var(--tx3)}
 .field:focus{border-color:var(--ac);background:rgba(255,255,255,.12)}
-.people{padding:14px;overflow:auto;background:rgba(255,255,255,.03)}
+.people{min-height:0;padding:14px;overflow:auto;background:rgba(255,255,255,.03)}
 .nl-title{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3);margin:0 0 8px;font-weight:700}
 .users{display:flex;flex-direction:column;gap:6px}
 .user{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.07);border:1px solid var(--bd);font-size:13px}
@@ -104,7 +107,13 @@ a{color:inherit;text-decoration:none}
 .login h1{font-size:26px;margin-bottom:8px;display:flex;align-items:center;gap:12px}
 .login h1 i{color:var(--ac)}
 .login p{color:var(--tx2);line-height:1.5;margin-bottom:16px;font-size:14px}
-.login form{display:flex;gap:8px}
+.login form{display:flex;flex-direction:column;gap:10px}
+.login .field{flex:none;width:100%}
+.login .login-actions{display:flex;gap:8px}
+.login .login-actions .tool-btn{flex:1}
+.login .divider{display:flex;align-items:center;gap:10px;margin:14px 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3)}
+.login .divider::before,.login .divider::after{content:"";flex:1;height:1px;background:var(--bd)}
+.login .guest-btn{width:100%}
 .login .error{min-height:20px;margin-top:10px;font-size:12px;color:var(--err)}
 
 /* ---------- staff diagnostics ---------- */
@@ -141,7 +150,8 @@ a{color:inherit;text-decoration:none}
   #nlSidebar .nl-logo span,.nl-nav span{display:none}
   #nlSidebar .nl-logo{justify-content:center;padding:8px 0 14px}
   .nl-nav{justify-content:center;padding:12px 0}
-  .chat-card{grid-template-columns:1fr}
+  .chat-card{grid-template-columns:minmax(0,1fr)}
+  .chat-main{border-right:0}
   .people{display:none}
   .msg{max-width:92%}
   .staff-body{grid-template-columns:1fr}
