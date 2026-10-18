@@ -15,10 +15,18 @@
 <div id="loginOverlay" class="overlay">
   <div class="login nl-glass">
     <h1><i class="fas fa-comments"></i>NLGEP Chat</h1>
-    <p id="loginText">Choose a unique username to join the InfiNet global chat.</p>
-    <form id="loginForm"><input id="username" class="field" maxlength="24" autocomplete="off" placeholder="Username"><button class="tool-btn primary">Enter</button></form>
+    <p id="loginText">Log in with your username and password, create an account, or jump in as a guest.</p>
+    <form id="loginForm">
+      <input id="username" class="field" maxlength="24" autocomplete="username" placeholder="Username">
+      <input id="password" class="field" type="password" maxlength="128" autocomplete="current-password" placeholder="Password">
+      <div class="login-actions">
+        <button id="loginBtn" class="tool-btn primary" type="submit">Log in</button>
+        <button id="registerBtn" class="tool-btn" type="button">Create account</button>
+      </div>
+    </form>
+    <div class="divider">or</div>
+    <button id="guestBtn" class="tool-btn guest-btn" type="button"><i class="fas fa-user-secret"></i>Continue as guest</button>
     <div id="loginError" class="error"></div>
-    <button id="continueUser" class="tool-btn" style="display:none;width:100%;margin-top:8px">Continue as current user</button>
   </div>
 </div>
 
@@ -62,9 +70,11 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const overlay = $("loginOverlay"), loginForm = $("loginForm"), username = $("username"), loginError = $("loginError"),
-      messagesEl = $("messages"), usersEl = $("users"), onlineCount = $("onlineCount"), input = $("messageInput");
-let lastMessageId = "", pollId = null, polling = false, currentUsername = "";
+const overlay = $("loginOverlay"), loginForm = $("loginForm"), username = $("username"), password = $("password"),
+      loginError = $("loginError"), messagesEl = $("messages"), usersEl = $("users"), onlineCount = $("onlineCount"),
+      input = $("messageInput");
+const authButtons = [$("loginBtn"), $("registerBtn"), $("guestBtn")];
+let lastMessageId = "", pollId = null, polling = false;
 
 function fmt(t){ try { return new Date(t).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}); } catch { return ""; } }
 function showLogin(msg = ""){ overlay.style.display = "flex"; loginError.textContent = msg; }
@@ -119,39 +129,49 @@ async function enterChat(){
   await refreshUsers();
   pollId = setInterval(() => { refreshMessages(); refreshUsers(); }, 1500);
   hideLogin();
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  input.focus();
 }
 
+// Nothing is remembered between visits: any leftover session is ended on load,
+// so everyone has to log in (or pick guest) every time.
 async function start(){
-  try {
-    const r = await fetch("/api/chat-me", {credentials: "same-origin", cache: "no-store"});
-    const d = await r.json().catch(() => ({}));
-    if (r.ok && d.user){
-      currentUsername = d.user.username;
-      $("loginText").textContent = "Already signed in as " + d.user.username + ". Enter another name or continue.";
-      $("continueUser").style.display = "block";
-    } else showLogin();
-  } catch { showLogin("Could not connect to InfiNet. Please try again."); }
+  await fetch("/api/chat-session", {method: "DELETE", credentials: "same-origin"}).catch(() => {});
+  showLogin();
 }
 
-$("continueUser").onclick = () => enterChat();
+function setBusy(busy){ authButtons.forEach(b => b.disabled = busy); }
 
-loginForm.onsubmit = async e => {
-  e.preventDefault();
+async function authenticate(path, withCredentials){
   loginError.textContent = "";
-  const n = username.value.trim();
-  if (!n){ loginError.textContent = "Username cannot be empty."; return; }
+  const body = {};
+  if (withCredentials){
+    const n = username.value.trim(), p = password.value;
+    if (!n){ loginError.textContent = "Username cannot be empty."; return; }
+    if (!p){ loginError.textContent = "Password cannot be empty."; return; }
+    body.username = n;
+    body.password = p;
+  }
+  setBusy(true);
   try {
-    const r = await fetch("/api/chat-session", {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify({username: n})});
+    const r = await fetch(path, {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
     const d = await r.json().catch(() => ({}));
     if (!r.ok){
-      const detail = Array.isArray(d.detail) ? "Usernames are 2-24 characters: letters, numbers, spaces, _ . -" : d.detail;
-      loginError.textContent = detail || "Could not create a chat session.";
+      const detail = Array.isArray(d.detail)
+        ? "Usernames are 2-24 characters (letters, numbers, spaces, _ . -). Passwords are 6-128 characters."
+        : d.detail;
+      loginError.textContent = detail || "Something went wrong. Please try again.";
       return;
     }
-    currentUsername = n;
+    password.value = "";
     await enterChat();
-  } catch { loginError.textContent = "Could not join InfiNet. Please try again."; }
-};
+  } catch { loginError.textContent = "Could not reach InfiNet. Please try again."; }
+  finally { setBusy(false); }
+}
+
+loginForm.onsubmit = e => { e.preventDefault(); authenticate("/api/chat-login", true); };
+$("registerBtn").onclick = () => authenticate("/api/chat-register", true);
+$("guestBtn").onclick = () => authenticate("/api/chat-guest", false);
 
 $("composer").onsubmit = async e => {
   e.preventDefault();
