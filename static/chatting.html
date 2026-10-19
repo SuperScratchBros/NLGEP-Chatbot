@@ -47,7 +47,7 @@
   </div>
   <div class="nl-body"><div class="nl-card chat-card">
     <div class="chat-main">
-      <div class="chat-head"><strong>Global Chat</strong><div class="muted">Talk with other InfiNet users</div></div>
+      <div class="chat-head"><strong>Global Chat</strong><div class="muted" id="whoami">Talk with other InfiNet users</div></div>
       <div id="messages" class="messages"></div>
       <form id="composer" class="composer">
         <input id="messageInput" class="field" maxlength="2000" autocomplete="off" placeholder="Message NLGEP Chat…">
@@ -72,14 +72,24 @@
 const $ = id => document.getElementById(id);
 const overlay = $("loginOverlay"), loginForm = $("loginForm"), username = $("username"), password = $("password"),
       loginError = $("loginError"), messagesEl = $("messages"), usersEl = $("users"), onlineCount = $("onlineCount"),
-      input = $("messageInput");
+      input = $("messageInput"), whoami = $("whoami");
 const authButtons = [$("loginBtn"), $("registerBtn"), $("guestBtn")];
 let lastMessageId = "", pollId = null, polling = false;
+
+// The session token returned by login/register/guest. It is sent on every request as an explicit
+// header, so it always wins over any stale cookie a browser or proxy may still be holding on to
+// (that stale cookie is what used to turn a fresh login into an old Guest session).
+let token = "";
+function authHeaders(extra){
+  const h = Object.assign({}, extra || {});
+  if (token) h["X-Chat-Session"] = token;
+  return h;
+}
 
 function fmt(t){ try { return new Date(t).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}); } catch { return ""; } }
 function showLogin(msg = ""){ overlay.style.display = "flex"; loginError.textContent = msg; }
 function hideLogin(){ overlay.style.display = "none"; loginError.textContent = ""; }
-function sessionExpired(){ clearInterval(pollId); pollId = null; showLogin("Session expired. Please sign in again."); }
+function sessionExpired(){ clearInterval(pollId); pollId = null; token = ""; showLogin("Session expired. Please sign in again."); }
 
 function draw(rows, me){
   const stick = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
@@ -100,7 +110,7 @@ async function refreshMessages(){
   polling = true;
   try {
     const u = lastMessageId ? "/api/chat-messages?after=" + encodeURIComponent(lastMessageId) : "/api/chat-messages";
-    const r = await fetch(u, {credentials: "same-origin", cache: "no-store"});
+    const r = await fetch(u, {credentials: "same-origin", cache: "no-store", headers: authHeaders()});
     if (r.status === 401){ sessionExpired(); return; }
     if (!r.ok) return;
     const d = await r.json();
@@ -111,7 +121,7 @@ async function refreshMessages(){
 
 async function refreshUsers(){
   try {
-    const r = await fetch("/api/chat-users", {credentials: "same-origin", cache: "no-store"});
+    const r = await fetch("/api/chat-users", {credentials: "same-origin", cache: "no-store", headers: authHeaders()});
     if (r.status === 401){ sessionExpired(); return; }
     if (!r.ok) return;
     const d = await r.json();
@@ -136,6 +146,7 @@ async function enterChat(){
 // Nothing is remembered between visits: any leftover session is ended on load,
 // so everyone has to log in (or pick guest) every time.
 async function start(){
+  token = "";
   await fetch("/api/chat-session", {method: "DELETE", credentials: "same-origin"}).catch(() => {});
   showLogin();
 }
@@ -154,6 +165,7 @@ async function authenticate(path, withCredentials){
   }
   setBusy(true);
   try {
+    token = ""; // never send an old token while logging in
     const r = await fetch(path, {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
     const d = await r.json().catch(() => ({}));
     if (!r.ok){
@@ -163,6 +175,17 @@ async function authenticate(path, withCredentials){
       loginError.textContent = detail || "Something went wrong. Please try again.";
       return;
     }
+    token = d.token || "";
+
+    // Double-check who the server thinks we are before showing the chat.
+    const meRes = await fetch("/api/chat-me", {credentials: "same-origin", cache: "no-store", headers: authHeaders()});
+    const me = (await meRes.json().catch(() => ({}))).user;
+    if (!me || (d.username && me.username !== d.username)){
+      token = "";
+      loginError.textContent = "Signed in, but the server returned a different account. Please try again.";
+      return;
+    }
+    whoami.textContent = "Signed in as " + me.username + (d.guest ? " (guest)" : "");
     password.value = "";
     await enterChat();
   } catch { loginError.textContent = "Could not reach InfiNet. Please try again."; }
@@ -179,7 +202,7 @@ $("composer").onsubmit = async e => {
   if (!content) return;
   input.value = "";
   try {
-    const r = await fetch("/api/chat-messages", {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify({content})});
+    const r = await fetch("/api/chat-messages", {method: "POST", credentials: "same-origin", headers: authHeaders({"Content-Type": "application/json"}), body: JSON.stringify({content})});
     if (r.status === 401){ sessionExpired(); input.value = content; return; }
     if (!r.ok) throw new Error("send failed");
     await refreshMessages();
@@ -187,7 +210,8 @@ $("composer").onsubmit = async e => {
 };
 
 $("logout").onclick = async () => {
-  await fetch("/api/chat-session", {method: "DELETE", credentials: "same-origin"}).catch(() => {});
+  await fetch("/api/chat-session", {method: "DELETE", credentials: "same-origin", headers: authHeaders()}).catch(() => {});
+  token = "";
   location.reload();
 };
 
