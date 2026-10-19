@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import time
 from collections import defaultdict, deque
@@ -33,6 +34,8 @@ SUPABASE_SECRET_KEY = env_secret("SUPABASE_SECRET_KEY") or env_secret("SUPABASE_
 
 RATE_LIMIT_IP, RATE_LIMIT_GLOBAL = 20, 120  # write requests per minute
 SESSION_COOKIE = "infinet_session"
+SESSION_HEADER = "x-chat-session"
+SESSION_ID_RE = re.compile(r"^[0-9a-f]{48}$")
 # Sessions are browser-session cookies (no max_age), so closing the browser logs you out.
 # This is only the server-side upper bound for a single session.
 SESSION_MAX_AGE = 60 * 60 * 12
@@ -146,8 +149,26 @@ def supabase_rows(table: str, params=None, method="GET", payload=None, prefer=No
     return r.json() if r.text else []
 
 
+def request_session_id(request: Request) -> str:
+    """Which session is this request asking for?
+
+    An explicit token (X-Chat-Session header, or Authorization: Bearer) always wins over the cookie.
+    Browsers/proxies can keep a stale cookie from an earlier guest visit; if the cookie won, a user
+    who just logged in would still be treated as that old guest.
+    """
+    token = request.headers.get(SESSION_HEADER, "").strip()
+    if not token:
+        auth = request.headers.get("authorization", "").strip()
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    if token:
+        return token if SESSION_ID_RE.match(token) else ""
+    cookie = request.cookies.get(SESSION_COOKIE, "")
+    return cookie if SESSION_ID_RE.match(cookie) else ""
+
+
 def session_user(request: Request):
-    session_id = request.cookies.get(SESSION_COOKIE, "")
+    session_id = request_session_id(request)
     if not session_id or not supabase_configured():
         return None
     r = httpx.get(
@@ -189,6 +210,22 @@ def delete_user_quietly(user):
         pass
 
 
+def end_session_quietly(session_id: str) -> None:
+    """Delete a session row; if it belonged to a guest, remove the throwaway guest account too."""
+    if not session_id or not supabase_configured():
+        return
+    try:
+        rows = supabase_rows("chat_sessions", {"select": "user_id", "session_id": f"eq.{session_id}", "limit": "1"})
+        supabase_rows("chat_sessions", {"session_id": f"eq.{session_id}"}, method="DELETE")
+        if rows:
+            # Guests vanish when they leave (their messages go with them via ON DELETE CASCADE).
+            users = supabase_rows("chat_users", {"select": "user_id,is_guest", "user_id": f"eq.{rows[0]['user_id']}"})
+            if users and users[0].get("is_guest"):
+                delete_user_quietly(users[0])
+    except Exception:
+        pass
+
+
 def clean_username(raw: str) -> str:
     username = " ".join(raw.strip().split())
     if len(username) < 2:
@@ -206,8 +243,13 @@ def find_user(username: str):
     return None
 
 
-def start_session(user, request: Request, response: Response) -> None:
-    """Create a server-side session and set a non-persistent cookie (cleared when the browser closes)."""
+def start_session(user, request: Request, response: Response) -> str:
+    """Create a server-side session, set a non-persistent cookie, and return the session token.
+
+    Any session this browser already had (e.g. an old guest) is ended first so it can never
+    shadow the new login.
+    """
+    end_session_quietly(request_session_id(request))
     session_id = os.urandom(24).hex()
     expires_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + SESSION_MAX_AGE))
     supabase_rows("chat_sessions", method="POST",
@@ -215,7 +257,8 @@ def start_session(user, request: Request, response: Response) -> None:
                            "expires_at": expires_at, "last_seen": utc_now()},
                   prefer="return=minimal")
     response.set_cookie(SESSION_COOKIE, session_id, httponly=True,
-                        samesite="lax", secure=request.url.scheme == "https")
+                        samesite="lax", secure=request.url.scheme == "https", path="/")
+    return session_id
 
 
 # ---------------------------------------------------------------- API
@@ -237,6 +280,7 @@ def register(body: CredentialsRequest, request: Request, response: Response):
     if username.lower().startswith("guest"):
         raise HTTPException(400, "Usernames starting with \"Guest\" are reserved.")
     user = None
+    token = ""
     try:
         if find_user(username):
             raise HTTPException(409, "That username is already taken. Choose another one.")
@@ -244,7 +288,7 @@ def register(body: CredentialsRequest, request: Request, response: Response):
                              payload={"username": username, "password_hash": hash_password(body.password),
                                       "is_guest": False},
                              prefer="return=representation")[0]
-        start_session(user, request, response)
+        token = start_session(user, request, response)
     except HTTPException as e:
         delete_user_quietly(user)
         if e.status_code == 502 and "duplicate key" in str(e.detail).lower():
@@ -253,7 +297,7 @@ def register(body: CredentialsRequest, request: Request, response: Response):
     except Exception as e:
         delete_user_quietly(user)
         raise HTTPException(502, f"Could not create account: {scrub(e)}")
-    return {"username": user["username"], "guest": False}
+    return {"username": user["username"], "guest": False, "token": token}
 
 
 @app.post("/api/chat-login")
@@ -266,12 +310,12 @@ def login(body: CredentialsRequest, request: Request, response: Response):
     if not user or not stored or not ok:
         raise HTTPException(401, "Incorrect username or password.")
     try:
-        start_session(user, request, response)
+        token = start_session(user, request, response)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(502, f"Could not sign in: {scrub(e)}")
-    return {"username": user["username"], "guest": False}
+    return {"username": user["username"], "guest": False, "token": token}
 
 
 @app.post("/api/chat-guest")
@@ -298,31 +342,24 @@ def guest_login(request: Request, response: Response):
     if user is None:
         raise HTTPException(503, "Could not find a free guest name. Try again.")
     try:
-        start_session(user, request, response)
+        token = start_session(user, request, response)
     except HTTPException:
         delete_user_quietly(user)
         raise
     except Exception as e:
         delete_user_quietly(user)
         raise HTTPException(502, f"Could not start guest session: {scrub(e)}")
-    return {"username": user["username"], "guest": True}
+    return {"username": user["username"], "guest": True, "token": token}
 
 
 @app.delete("/api/chat-session")
 def delete_chat_session(request: Request, response: Response):
-    session_id = request.cookies.get(SESSION_COOKIE, "")
-    response.delete_cookie(SESSION_COOKIE)
-    if session_id and supabase_configured():
-        try:
-            rows = supabase_rows("chat_sessions", {"select": "user_id", "session_id": f"eq.{session_id}", "limit": "1"})
-            supabase_rows("chat_sessions", {"session_id": f"eq.{session_id}"}, method="DELETE")
-            if rows:
-                # Guests vanish when they leave (their messages go with them via ON DELETE CASCADE).
-                users = supabase_rows("chat_users", {"select": "user_id,is_guest", "user_id": f"eq.{rows[0]['user_id']}"})
-                if users and users[0].get("is_guest"):
-                    delete_user_quietly(users[0])
-        except HTTPException:
-            pass
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    end_session_quietly(request_session_id(request))
+    # Also end whatever the cookie points at, in case it differs from the explicit token.
+    cookie = request.cookies.get(SESSION_COOKIE, "")
+    if SESSION_ID_RE.match(cookie) and cookie != request_session_id(request):
+        end_session_quietly(cookie)
     return {"ok": True}
 
 
@@ -392,6 +429,8 @@ async def no_stale_pages(request: Request, call_next):
     path = request.url.path
     if path in ("/", "/chat") or path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
+    if path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
     return response
 
 
